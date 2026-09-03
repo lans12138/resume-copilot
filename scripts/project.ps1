@@ -3,6 +3,10 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet(
         'bootstrap',
+        'docker-recover',
+        'docker-recover-test',
+        'env-init',
+        'env-test',
         'api',
         'api-smoke',
         'auth-test',
@@ -95,6 +99,18 @@ function Invoke-WebTool {
 Push-Location $repoRoot
 try {
     switch ($Action) {
+        'docker-recover' {
+            & (Join-Path $repoRoot 'scripts/recover_docker_desktop.ps1')
+        }
+        'docker-recover-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_docker_recovery.ps1')
+        }
+        'env-init' {
+            & (Join-Path $repoRoot 'scripts/initialize_local_env.ps1')
+        }
+        'env-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_local_env.ps1')
+        }
         'bootstrap' {
             Build-BackendDevelopmentImage
             Install-WebDependencies
@@ -168,6 +184,8 @@ try {
         }
         'verify' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_project_structure.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_docker_recovery.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_local_env.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_compose_stack.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_migrations.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_auth.ps1')
