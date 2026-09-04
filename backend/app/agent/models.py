@@ -173,6 +173,26 @@ class AgentEvent(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    def to_sse_dict(self) -> dict[str, Any]:
+        """Structured SSE envelope (detailed design §13.1).
+
+        Front-end code must drive UI from ``event_type`` / ``status`` /
+        ``sequence`` / typed ``safe_payload`` only — never from natural-language
+        text. ``occurred_at`` is serialised to an ISO-8601 string for JSON.
+        """
+        return {
+            "event_id": str(self.id),
+            "run_id": str(self.run_id),
+            "run_type": self.run_type.value,
+            "sequence": self.sequence,
+            "event_type": self.event_type.value,
+            "node": self.node,
+            "status": self.status,
+            "message_key": self.message_key,
+            "safe_payload": self.safe_payload_json,
+            "occurred_at": self.occurred_at.isoformat() if self.occurred_at is not None else None,
+        }
+
 
 class CheckpointTuple:
     """Portable snapshot returned by a ``Checkpointer`` (LangGraph-compatible).

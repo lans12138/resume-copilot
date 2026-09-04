@@ -36,7 +36,9 @@ router = APIRouter(prefix="/api/v1/approvals", tags=["approvals"])
 
 def _build_service(session: AsyncSession, resources: RuntimeResources) -> ApprovalService:
     agent_repo = SqlAgentRunRepository(session)
-    run_service = RunService(agent_repo, resources.checkpointer)
+    run_service = RunService(
+        agent_repo, resources.checkpointer, notifier=resources.event_notifier
+    )
     approval_repo = SqlApprovalRepository(session)
     arun_repo = SqlApplicationRunRepository(session)
     app_repo = SqlJobApplicationRepository(session)

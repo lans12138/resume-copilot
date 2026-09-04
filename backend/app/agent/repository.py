@@ -61,6 +61,18 @@ class AgentRunRepository(Protocol):
 
     async def list_events(self, run_id: UUID) -> list[AgentEvent]: ...
 
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
+        """Replay events with ``sequence > last_sequence`` ordered, capped at limit."""
+        ...
+
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
+        """Fetch one event by (run_id, sequence); None if it does not belong here."""
+        ...
+
 
 class InMemoryAgentRunRepository:
     """Lock-guarded in-process store; sequence is atomic under concurrency."""
@@ -122,6 +134,29 @@ class InMemoryAgentRunRepository:
     async def list_events(self, run_id: UUID) -> list[AgentEvent]:
         async with self._lock:
             return [e for e in self._events if e.run_id == run_id]
+
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
+        async with self._lock:
+            ordered = sorted(
+                (
+                    e
+                    for e in self._events
+                    if e.run_id == run_id and e.sequence > last_sequence
+                ),
+                key=lambda e: e.sequence,
+            )
+            return ordered[:limit]
+
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
+        async with self._lock:
+            for event in self._events:
+                if event.run_id == run_id and event.sequence == sequence:
+                    return event
+            return None
 
 
 class SqlAgentRunRepository:
@@ -195,3 +230,24 @@ class SqlAgentRunRepository:
             .order_by(AgentEvent.sequence)
         )
         return list(result.scalars().all())
+
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
+        result = await self._session.execute(
+            select(AgentEvent)
+            .where(AgentEvent.run_id == run_id, AgentEvent.sequence > last_sequence)
+            .order_by(AgentEvent.sequence)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
+        result = await self._session.execute(
+            select(AgentEvent).where(
+                AgentEvent.run_id == run_id, AgentEvent.sequence == sequence
+            )
+        )
+        return result.scalars().first()

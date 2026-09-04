@@ -18,6 +18,7 @@ from backend.app.infrastructure.database import (
 )
 from backend.app.infrastructure.redis import build_redis_client, check_redis
 from backend.app.infrastructure.storage import LocalVolumeStorage, StorageBackend
+from backend.app.sse.notifier import EventNotifier, RedisEventNotifier
 
 
 @dataclass(slots=True)
@@ -30,6 +31,7 @@ class RuntimeResources:
     redis: Redis
     storage_root: Path
     storage: StorageBackend
+    event_notifier: EventNotifier
 
     @classmethod
     def build(cls, settings: Settings) -> RuntimeResources:
@@ -39,15 +41,19 @@ class RuntimeResources:
             settings.storage_root,
             max_size_bytes=settings.max_file_size_mb * 1024 * 1024,
         )
+        redis = build_redis_client(settings)
         # MVP checkpointer: process-local. IMP-030 swaps in an AsyncPostgresSaver
         # so a worker restart can still resume a WAITING_APPROVAL run (§17.2).
+        # SSE fan-out uses Redis Pub/Sub; a lost publish is recovered by the SSE
+        # heartbeat polling PostgreSQL (§13.2).
         return cls(
             engine=engine,
             session_factory=build_session_factory(engine),
             checkpointer=InMemoryCheckpointer(),
-            redis=build_redis_client(settings),
+            redis=redis,
             storage_root=settings.storage_root,
             storage=storage,
+            event_notifier=RedisEventNotifier(redis),
         )
 
     async def check_postgres(self) -> None:

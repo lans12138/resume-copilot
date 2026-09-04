@@ -47,7 +47,11 @@ async def _expire(session: AsyncSession, before: datetime) -> int:
     approval_repo = SqlApprovalRepository(session)
     arun_repo = SqlApplicationRunRepository(session)
     app_repo = SqlJobApplicationRepository(session)
-    run_service = RunService(SqlAgentRunRepository(session), _resources().checkpointer)
+    run_service = RunService(
+        SqlAgentRunRepository(session),
+        _resources().checkpointer,
+        notifier=_resources().event_notifier,
+    )
     approval_service = ApprovalService(
         authorize=_authorize_noop,
         approval_repo=approval_repo,

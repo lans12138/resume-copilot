@@ -22,6 +22,7 @@ from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.job_applications.routes import router as application_runs_router
 from backend.app.jobs.routes import router as jobs_router
 from backend.app.reports.routes import router as reports_router
+from backend.app.sse.routes import router as sse_router
 
 
 def create_app(
@@ -62,6 +63,7 @@ def create_app(
     application.include_router(reports_router)
     application.include_router(application_runs_router)
     application.include_router(approvals_router)
+    application.include_router(sse_router)
 
     @application.get("/api/v1/health/live", tags=["health"])
     def liveness() -> dict[str, str]:

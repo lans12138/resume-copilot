@@ -25,14 +25,23 @@ from backend.app.agent.models import (
     RunType,
 )
 from backend.app.agent.repository import AgentRunRepository
+from backend.app.sse.notifier import EventNotifier
 
 
 class RunService:
     """Create, drive, and recover agent runs."""
 
-    def __init__(self, repository: AgentRunRepository, checkpointer: Checkpointer) -> None:
+    def __init__(
+        self,
+        repository: AgentRunRepository,
+        checkpointer: Checkpointer,
+        notifier: EventNotifier | None = None,
+    ) -> None:
         self._repository = repository
         self._engine = RunEngine(repository, checkpointer)
+        # Optional SSE fan-out: when set, every committed event publishes its
+        # run_id + sequence so live SSE connections wake and replay (IMP-025, §13.2).
+        self._notifier = notifier
 
     async def create_run(
         self,
@@ -56,7 +65,7 @@ class RunService:
             config_snapshot_json=config_snapshot,
         )
         await self._repository.save_run(run)
-        await self._repository.append_event(
+        await self._append_event(
             run_id=run.id,
             run_type=run_type,
             event_type=AgentEventType.RUN_CREATED,
@@ -96,7 +105,7 @@ class RunService:
         error_code: str | None = None,
         failed_node: str | None = None,
     ) -> None:
-        await self._repository.append_event(
+        await self._append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=AgentEventType.RUN_FAILED,
@@ -112,8 +121,33 @@ class RunService:
             run.failed_node = failed_node
         await self._repository.set_status(run.id, RunStatus.FAILED, finished=True)
 
+    async def _append_event(
+        self,
+        *,
+        run_id: UUID,
+        run_type: RunType,
+        event_type: AgentEventType,
+        node: str | None,
+        status: str,
+        message_key: str,
+        safe_payload: dict[str, Any],
+    ) -> AgentEvent:
+        """Append an event, then publish its sequence to the SSE notifier."""
+        event = await self._repository.append_event(
+            run_id=run_id,
+            run_type=run_type,
+            event_type=event_type,
+            node=node,
+            status=status,
+            message_key=message_key,
+            safe_payload=safe_payload,
+        )
+        if self._notifier is not None:
+            await self._notifier.publish(run_id, event.sequence)
+        return event
+
     async def cancel_run(self, run: AgentRun, *, reason: str) -> None:
-        await self._repository.append_event(
+        await self._append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=AgentEventType.RUN_CANCELLED,
@@ -134,7 +168,7 @@ class RunService:
         safe_payload: dict[str, Any] | None = None,
     ) -> None:
         """Write a STATUS_CHANGED event and set the run status in one step."""
-        await self._repository.append_event(
+        await self._append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=AgentEventType.STATUS_CHANGED,
@@ -149,7 +183,7 @@ class RunService:
         self, run: AgentRun, *, reason: str | None, message_key: str = "run.completed"
     ) -> None:
         """Mark a run COMPLETED with a terminal event (finished_at set)."""
-        await self._repository.append_event(
+        await self._append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=AgentEventType.RUN_COMPLETED,

@@ -99,6 +99,7 @@ class MatchRunService:
             next_event_sequence=0,
             version=1,
             config_snapshot_json={
+                "job_id": str(job_id),
                 "job_version_id": str(job_version_id),
                 "retrieval_config": retrieval_config,
                 "rule_version": rule_version,

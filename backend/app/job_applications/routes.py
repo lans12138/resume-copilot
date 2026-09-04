@@ -55,7 +55,9 @@ async def application_run_service(request: Request) -> AsyncGenerator[Applicatio
         agent_repo = SqlAgentRunRepository(session)
         # Shared process checkpointer so a WAITING_APPROVAL run resumes across
         # requests (the real PG saver arrives in IMP-030, §17.2).
-        run_service = RunService(agent_repo, resources.checkpointer)
+        run_service = RunService(
+            agent_repo, resources.checkpointer, notifier=resources.event_notifier
+        )
         app_repo = SqlJobApplicationRepository(session)
         arun_repo = SqlApplicationRunRepository(session)
         approval_repo = SqlApprovalRepository(session)
