@@ -46,11 +46,20 @@ def build_application_graph() -> RunGraph:
         # Freeze the proposal for the pending approval (created in IMP-022).
         return {**state, "pending_approval": state.get("proposal")}
 
+    def finalize_run(state: dict[str, Any]) -> dict[str, Any]:
+        # Terminal node reached after an APPROVED/EDITED decision resumes the
+        # graph (§11.2). It carries no side effect; the engine ends the run.
+        # IMP-024 inserts the side-effect nodes (update_application_status,
+        # propose_schedule, create_interview_schedule) between human_review and
+        # this node, all gated behind an approval.
+        return {**state, "finalized": True}
+
     return RunGraph(
         nodes=[
             GraphNode("load_application", load_application),
             GraphNode("analyze_candidate", analyze_candidate),
             GraphNode("human_review", human_review),
+            GraphNode("finalize_run", finalize_run),
         ],
         interrupt_after="human_review",
         interrupt_status=RunStatus.WAITING_APPROVAL,

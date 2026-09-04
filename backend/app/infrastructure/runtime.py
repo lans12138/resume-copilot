@@ -8,6 +8,7 @@ from pathlib import Path
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from backend.app.agent.checkpoint import Checkpointer, InMemoryCheckpointer
 from backend.app.core.settings import Settings
 from backend.app.infrastructure.database import (
     SessionFactory,
@@ -25,6 +26,7 @@ class RuntimeResources:
 
     engine: AsyncEngine
     session_factory: SessionFactory
+    checkpointer: Checkpointer
     redis: Redis
     storage_root: Path
     storage: StorageBackend
@@ -37,9 +39,12 @@ class RuntimeResources:
             settings.storage_root,
             max_size_bytes=settings.max_file_size_mb * 1024 * 1024,
         )
+        # MVP checkpointer: process-local. IMP-030 swaps in an AsyncPostgresSaver
+        # so a worker restart can still resume a WAITING_APPROVAL run (§17.2).
         return cls(
             engine=engine,
             session_factory=build_session_factory(engine),
+            checkpointer=InMemoryCheckpointer(),
             redis=build_redis_client(settings),
             storage_root=settings.storage_root,
             storage=storage,

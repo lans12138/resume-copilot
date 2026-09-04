@@ -16,6 +16,9 @@ from backend.app.agent.checkpoint import InMemoryCheckpointer
 from backend.app.agent.models import AgentRun, RunStatus
 from backend.app.agent.repository import InMemoryAgentRunRepository
 from backend.app.agent.service import RunService
+from backend.app.approvals.models import ApprovalStatus
+from backend.app.approvals.repository import InMemoryApprovalRepository
+from backend.app.approvals.service import ApprovalService
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
@@ -32,12 +35,30 @@ def _make_core() -> tuple[
     InMemoryJobApplicationRepository,
     InMemoryApplicationRunRepository,
     RunService,
+    InMemoryApprovalRepository,
 ]:
     agent_repo = InMemoryAgentRunRepository()
-    run_service = RunService(agent_repo, InMemoryCheckpointer())
+    checkpointer = InMemoryCheckpointer()
+    run_service = RunService(agent_repo, checkpointer)
     app_repo = InMemoryJobApplicationRepository()
     arun_repo = InMemoryApplicationRunRepository()
-    return agent_repo, app_repo, arun_repo, run_service
+    approval_repo = InMemoryApprovalRepository()
+    return agent_repo, app_repo, arun_repo, run_service, approval_repo
+
+
+def _build_approval_service(
+    app_repo: InMemoryJobApplicationRepository,
+    arun_repo: InMemoryApplicationRunRepository,
+    run_service: RunService,
+    approval_repo: InMemoryApprovalRepository,
+) -> ApprovalService:
+    return ApprovalService(
+        authorize=_always_authorize,
+        approval_repo=approval_repo,
+        arun_repo=arun_repo,
+        app_repo=app_repo,
+        run_service=run_service,
+    )
 
 
 async def _always_authorize(actor: Actor, job_id: UUID) -> None:
@@ -48,14 +69,17 @@ def _service(
     app_repo: InMemoryJobApplicationRepository,
     arun_repo: InMemoryApplicationRunRepository,
     run_service: RunService,
+    approval_repo: InMemoryApprovalRepository,
     *,
     report_lookup: Any | None = None,
 ) -> ApplicationRunService:
+    approval_service = _build_approval_service(app_repo, arun_repo, run_service, approval_repo)
     return ApplicationRunService(
         app_repo=app_repo,
         arun_repo=arun_repo,
         run_service=run_service,
         authorize=_always_authorize,
+        approval_service=approval_service,
         report_lookup=report_lookup,
     )
 
@@ -79,8 +103,8 @@ def test_concurrent_create_only_one_succeeds() -> None:
 
 
 async def _concurrent_create() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     job_id = uuid4()
     app = _application(job_id, uuid4())
     await app_repo.save_application(app)
@@ -111,8 +135,8 @@ def test_create_reaches_waiting_approval_and_holds_slot() -> None:
 
 
 async def _create_reaches_waiting_approval() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     job_id = uuid4()
     app = _application(job_id, uuid4())
     await app_repo.save_application(app)
@@ -126,6 +150,10 @@ async def _create_reaches_waiting_approval() -> None:
     assert refreshed is not None
     assert refreshed.active_application_run_id == agent_run.id
     assert application_run.application_id == app.id
+    # IMP-022: a PENDING approval is frozen at the human_review pause (§11.4).
+    detail = await service.get_application_run_detail(agent_run.id)
+    assert detail[2] is not None
+    assert detail[2].status is ApprovalStatus.PENDING
 
 
 def test_cancel_clears_slot() -> None:
@@ -133,8 +161,8 @@ def test_cancel_clears_slot() -> None:
 
 
 async def _cancel_clears_slot() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     app = _application(uuid4(), uuid4())
     await app_repo.save_application(app)
     actor = _actor()
@@ -154,8 +182,8 @@ def test_mark_failed_clears_slot() -> None:
 
 
 async def _mark_failed_clears_slot() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     app = _application(uuid4(), uuid4())
     await app_repo.save_application(app)
     actor = _actor()
@@ -175,8 +203,8 @@ def test_idempotent_cancel_at_terminal() -> None:
 
 
 async def _idempotent_cancel() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     app = _application(uuid4(), uuid4())
     await app_repo.save_application(app)
     actor = _actor()
@@ -197,8 +225,8 @@ def test_list_and_get_application_run() -> None:
 
 
 async def _list_and_get() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
-    service = _service(app_repo, arun_repo, run_service)
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
+    service = _service(app_repo, arun_repo, run_service, approval_repo)
     app = _application(uuid4(), uuid4())
     await app_repo.save_application(app)
     actor = _actor()
@@ -220,7 +248,7 @@ def test_report_lookup_rejects_unlinked_report() -> None:
 
 
 async def _report_lookup_validation() -> None:
-    _agent_repo, app_repo, arun_repo, run_service = _make_core()
+    _agent_repo, app_repo, arun_repo, run_service, approval_repo = _make_core()
 
     async def lookup_wrong(report_id: UUID) -> Any | None:
         return SimpleNamespace(application_id=uuid4())  # different application
@@ -233,7 +261,9 @@ async def _report_lookup_validation() -> None:
     actor = _actor()
 
     # Wrong application -> 422.
-    svc_wrong = _service(app_repo, arun_repo, run_service, report_lookup=lookup_wrong)
+    svc_wrong = _service(
+        app_repo, arun_repo, run_service, approval_repo, report_lookup=lookup_wrong
+    )
     try:
         await svc_wrong.create_application_run(actor, app.id, uuid4())
         raise AssertionError("expected 422 for unlinked report")
@@ -242,7 +272,9 @@ async def _report_lookup_validation() -> None:
         assert exc.http_status == 422
 
     # Missing report -> 422.
-    svc_missing = _service(app_repo, arun_repo, run_service, report_lookup=lookup_missing)
+    svc_missing = _service(
+        app_repo, arun_repo, run_service, approval_repo, report_lookup=lookup_missing
+    )
     try:
         await svc_missing.create_application_run(actor, app.id, uuid4())
         raise AssertionError("expected 422 for missing report")
@@ -254,6 +286,6 @@ async def _report_lookup_validation() -> None:
     async def lookup_ok(report_id: UUID) -> Any | None:
         return SimpleNamespace(application_id=app.id)
 
-    svc_ok = _service(app_repo, arun_repo, run_service, report_lookup=lookup_ok)
+    svc_ok = _service(app_repo, arun_repo, run_service, approval_repo, report_lookup=lookup_ok)
     agent_run, _ = await svc_ok.create_application_run(actor, app.id, uuid4())
     assert agent_run.status is RunStatus.WAITING_APPROVAL

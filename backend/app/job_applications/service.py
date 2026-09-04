@@ -23,6 +23,8 @@ from uuid import UUID, uuid4
 
 from backend.app.agent.models import AgentRun, RunStatus, RunType
 from backend.app.agent.service import RunService
+from backend.app.approvals.models import Approval, ApprovalActionType, ApprovalStatus
+from backend.app.approvals.service import ApprovalService, DecisionAction
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import app_error
 from backend.app.job_applications.graph import build_application_graph
@@ -55,12 +57,14 @@ class ApplicationRunService:
         arun_repo: ApplicationRunRepository,
         run_service: RunService,
         authorize: ApplicationAccess,
+        approval_service: ApprovalService,
         report_lookup: MatchReportLookup | None = None,
     ) -> None:
         self._app_repo = app_repo
         self._arun_repo = arun_repo
         self._run_service = run_service
         self._authorize = authorize
+        self._approval_service = approval_service
         self._report_lookup = report_lookup
 
     async def create_application_run(
@@ -119,8 +123,91 @@ class ApplicationRunService:
             "attempt": 1,
             "proposed_status": "SHORTLISTED",
         }
-        await self._run_service.run_graph(run, graph, initial_state)
+        result = await self._run_service.run_graph(run, graph, initial_state)
+        # Freeze the agent proposal into a PENDING approval at the human_review
+        # pause (§11.4). Node replay returns the existing approval via the
+        # idempotency key, so a restarted worker never creates a duplicate.
+        proposal = (
+            result.checkpoint.checkpoint.get("proposal")
+            if result is not None
+            else None
+        ) or {
+            "action_type": "UPDATE_APPLICATION_STATUS",
+            "original_params": {"target_status": "SHORTLISTED"},
+        }
+        await self._approval_service.create_approval(
+            actor,
+            agent_run=run,
+            application_run=application_run,
+            application=application,
+            action_type=ApprovalActionType.UPDATE_APPLICATION_STATUS,
+            ordinal=1,
+            proposed_params=proposal,
+        )
         return run, application_run
+
+    async def decide_approval(
+        self,
+        actor: Actor,
+        approval_id: UUID,
+        decision: DecisionAction,
+        *,
+        expected_version: int,
+        edited_params: dict[str, Any] | None = None,
+    ) -> AgentRun:
+        """Decide the pending approval; resume the run or clear the slot.
+
+        Mirrors detailed design §11.5: APPROVED/EDITED resume the graph from its
+        checkpoint (the active slot is cleared once the run reaches a terminal
+        state); REJECTED completes the run without a side effect and frees the slot.
+        """
+        approval, status = await self._approval_service.decide(
+            actor,
+            approval_id,
+            decision,
+            expected_version=expected_version,
+            edited_params=edited_params,
+        )
+        application_run = await self._arun_repo.get_application_run(approval.application_run_id)
+        if application_run is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+
+        if status == ApprovalStatus.REJECTED:
+            await self._app_repo.clear_active_run(
+                application_run.application_id, approval.application_run_id
+            )
+            rejected = await self._run_service.get_run(approval.application_run_id)
+            if rejected is None:
+                raise app_error(
+                    "APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在"
+                )
+            return rejected
+
+        # APPROVED/EDITED: resume the graph from the checkpoint (§17.2). The
+        # current IMP-022 graph has no post-approval side-effect node, so resume
+        # runs straight to COMPLETED; IMP-024 adds update_application_status etc.
+        run = await self._run_service.get_run(approval.application_run_id)
+        if run is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+        await self._run_service.resume_run(run, build_application_graph())
+        if run.status == RunStatus.COMPLETED:
+            await self._app_repo.clear_active_run(
+                application_run.application_id, approval.application_run_id
+            )
+        return run
+
+    async def get_application_run_detail(
+        self, run_id: UUID
+    ) -> tuple[AgentRun, ApplicationRun, Approval | None]:
+        """Return the run, its child row, and the current PENDING approval (§12.5)."""
+        agent_run = await self._run_service.get_run(run_id)
+        if agent_run is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+        application_run = await self._arun_repo.get_application_run(run_id)
+        if application_run is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+        pending = await self._approval_service.get_pending_by_run(run_id)
+        return agent_run, application_run, pending
 
     async def cancel_application_run(
         self, actor: Actor, run_id: UUID

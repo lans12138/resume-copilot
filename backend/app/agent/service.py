@@ -107,3 +107,39 @@ class RunService:
             safe_payload={"reason": reason},
         )
         await self._repository.set_status(run.id, RunStatus.CANCELLED, finished=True)
+
+    async def emit_status(
+        self,
+        run: AgentRun,
+        *,
+        status: RunStatus,
+        message_key: str,
+        node: str | None = None,
+        safe_payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Write a STATUS_CHANGED event and set the run status in one step."""
+        await self._repository.append_event(
+            run_id=run.id,
+            run_type=run.run_type,
+            event_type=AgentEventType.STATUS_CHANGED,
+            node=node,
+            status=status.value,
+            message_key=message_key,
+            safe_payload=safe_payload or {},
+        )
+        await self._repository.set_status(run.id, status)
+
+    async def complete_run(
+        self, run: AgentRun, *, reason: str | None, message_key: str = "run.completed"
+    ) -> None:
+        """Mark a run COMPLETED with a terminal event (finished_at set)."""
+        await self._repository.append_event(
+            run_id=run.id,
+            run_type=run.run_type,
+            event_type=AgentEventType.RUN_COMPLETED,
+            node=None,
+            status=RunStatus.COMPLETED.value,
+            message_key=message_key,
+            safe_payload={"reason": reason} if reason else {},
+        )
+        await self._repository.set_status(run.id, RunStatus.COMPLETED, finished=True)
