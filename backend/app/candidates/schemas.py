@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -205,3 +205,92 @@ def revalidate_draft(draft: CandidateProfileDraft) -> CandidateProfileDraft:
             safe_message="模型抽取结果无法通过字段校验，需重新解析或由人工补全",
             details={"reason": type(error).__name__},
         ) from error
+
+
+class EvidenceLocator(BaseModel):
+    """Stable source position that maps back to the original resume.
+
+    Mirrors the locators produced by the PDF/DOCX parser so a reviewer can jump
+    from a claim straight to the exact page/paragraph/table character range.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["pdf", "docx_paragraph", "docx_table"]
+    page_number: int | None = None
+    block_index: int | None = None
+    paragraph_index: int | None = None
+    table_index: int | None = None
+    row_index: int | None = None
+    cell_index: int | None = None
+    char_start: int
+    char_end: int
+
+    @model_validator(mode="after")
+    def check_char_range(self) -> Self:
+        if self.char_end < self.char_start:
+            raise ValueError("char_end must not be earlier than char_start")
+        return self
+
+
+class EvidenceChunkCreate(BaseModel):
+    """One verbatim excerpt pinned to a profile + document, from a human reviewer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_profile_id: UUID
+    document_id: UUID
+    chunk_index: int = Field(ge=0, le=10_000)
+    section_type: str = Field(min_length=1, max_length=64)
+    locator: EvidenceLocator
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @field_validator("section_type")
+    @classmethod
+    def section_type_normalized(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class EvidenceChunkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    document_id: UUID
+    candidate_profile_id: UUID
+    chunk_index: int
+    section_type: str
+    locator_json: dict[str, Any]
+    text: str
+    text_sha256: str
+    created_at: datetime
+
+
+class CandidateProfileEdit(BaseModel):
+    """Human-confirmed edits applied to a REVIEW_REQUIRED profile before READY."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile_json: dict[str, Any]
+    normalized_skills: list[str] = Field(default_factory=list, max_length=200)
+    years_experience: float | None = Field(default=None, ge=0, le=60)
+    education_level: str | None = None
+
+    @field_validator("education_level")
+    @classmethod
+    def education_level_is_closed_enum(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in EDUCATION_LEVELS:
+            raise ValueError(
+                "education_level must be one of: " + ", ".join(EDUCATION_LEVELS)
+            )
+        return normalized
+
+    @field_validator("normalized_skills")
+    @classmethod
+    def skills_bounded(cls, value: list[str]) -> list[str]:
+        for name in value:
+            if not name or len(name) > _MAX_SKILL:
+                raise ValueError("each skill must be a non-empty string <= 80 chars")
+        return value

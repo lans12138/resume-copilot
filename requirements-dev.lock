@@ -112,6 +112,9 @@ typing-extensions==4.16.0
     #   alembic
     #   anyio
     #   fastapi
+
+pgvector==0.5.0
+    # via backend
     #   httpx2
     #   mypy
     #   pydantic

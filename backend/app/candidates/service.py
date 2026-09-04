@@ -8,21 +8,32 @@ human reviewer can complete it during the IMP-011 confirmation step.
 
 from __future__ import annotations
 
-from uuid import UUID
+import hashlib
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
-from backend.app.candidates.models import Candidate, CandidateProfile, CandidateProfileStatus
+from backend.app.candidates.models import (
+    Candidate,
+    CandidateProfile,
+    CandidateProfileStatus,
+    EvidenceChunk,
+)
 from backend.app.candidates.repository import (
     CandidateProfileRepository,
     CandidateRepository,
+    EvidenceChunkRepository,
 )
 from backend.app.candidates.schemas import (
     CandidateProfileDraft,
+    CandidateProfileEdit,
     CandidateProfileResponse,
+    EvidenceChunkCreate,
+    EvidenceChunkResponse,
     revalidate_draft,
 )
-from backend.app.core.errors import AppError
+from backend.app.core.errors import AppError, app_error
 from backend.app.documents.models import ResumeDocument
 from backend.app.documents.parsers import ParsedDocument
 from backend.app.infrastructure.model_gateway import ModelGateway, normalize_email_hash
@@ -99,3 +110,156 @@ class ProfileExtractionService:
 def _normalize_skills(draft: CandidateProfileDraft) -> list[str]:
     names = {claim.name.strip().casefold() for claim in draft.skills if claim.name.strip()}
     return sorted(names)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _assert_hr(actor: Actor) -> None:
+    if actor.role is not UserRole.HR:
+        raise app_error(
+            code="FORBIDDEN",
+            http_status=403,
+            safe_message="当前用户无简历校对权限",
+        )
+
+
+class ProfileReviewService:
+    """Human confirmation and evidence pinning for extracted profiles.
+
+    Turns a REVIEW_REQUIRED draft into a READY, versioned, and human-attested
+    profile, and lets reviewers pin verbatim evidence chunks. Both write paths
+    are HR-only and enforce the D09 invariants: optimistic-lock conflict, single
+    READY version per candidate, and rejection of cross-document evidence.
+    """
+
+    def __init__(
+        self,
+        profile_repo: CandidateProfileRepository,
+        chunk_repo: EvidenceChunkRepository,
+    ) -> None:
+        self._profiles = profile_repo
+        self._chunks = chunk_repo
+
+    async def confirm_profile(
+        self,
+        *,
+        actor: Actor,
+        profile_id: UUID,
+        edit: CandidateProfileEdit,
+        expected_version: int,
+    ) -> CandidateProfileResponse:
+        _assert_hr(actor)
+
+        profile = await self._profiles.get(profile_id)
+        if profile is None:
+            raise app_error(
+                code="PROFILE_NOT_FOUND",
+                http_status=404,
+                safe_message="候选人资料不存在",
+            )
+        if profile.status is not CandidateProfileStatus.REVIEW_REQUIRED:
+            raise app_error(
+                code="PROFILE_NOT_REVIEWABLE",
+                http_status=409,
+                safe_message="只有待校对的资料可以确认",
+                details={"status": profile.status.value},
+            )
+        # Optimistic-lock guard: a stale edit must not clobber a newer confirmation.
+        if profile.version != expected_version:
+            raise app_error(
+                code="PROFILE_VERSION_CONFLICT",
+                http_status=409,
+                safe_message="资料已被其他人修改，请刷新后重试",
+                details={"expected": expected_version, "current": profile.version},
+                retryable=True,
+            )
+
+        profile.profile_json = edit.profile_json
+        profile.normalized_skills = sorted(
+            {s.strip().casefold() for s in edit.normalized_skills if s.strip()}
+        )
+        profile.years_experience = edit.years_experience
+        profile.education_level = edit.education_level
+
+        # Exactly one READY profile per candidate: supersede any prior READY version.
+        for prior in await self._profiles.list_ready_versions(profile.candidate_id):
+            if prior.id != profile.id:
+                prior.status = CandidateProfileStatus.SUPERSEDED
+
+        profile.status = CandidateProfileStatus.READY
+        profile.confirmed_by = actor.user_id
+        profile.confirmed_at = datetime.now(UTC)
+        profile.version += 1
+        await self._profiles.save(profile)
+        return CandidateProfileResponse.model_validate(profile)
+
+    async def create_evidence_chunks(
+        self,
+        *,
+        actor: Actor,
+        chunks: list[EvidenceChunkCreate],
+    ) -> list[EvidenceChunkResponse]:
+        _assert_hr(actor)
+
+        created: list[EvidenceChunk] = []
+        seen_index: set[tuple[UUID, int]] = set()
+        for item in chunks:
+            profile = await self._profiles.get(item.candidate_profile_id)
+            if profile is None:
+                raise app_error(
+                    code="PROFILE_NOT_FOUND",
+                    http_status=404,
+                    safe_message="证据引用的候选人资料不存在",
+                )
+            # Cross-document evidence is rejected: a chunk must reference the exact
+            # document the profile was extracted from (also enforced by the composite FK).
+            if item.document_id != profile.document_id:
+                raise app_error(
+                    code="EVIDENCE_CROSS_DOCUMENT_REJECTED",
+                    http_status=422,
+                    safe_message="证据引用的文档不属于该候选人资料",
+                    details={"profile_document_id": str(profile.document_id)},
+                )
+            duplicate_in_batch = (item.document_id, item.chunk_index) in seen_index
+            already_stored = await self._chunks.exists_index(item.document_id, item.chunk_index)
+            if duplicate_in_batch or already_stored:
+                raise app_error(
+                    code="EVIDENCE_CHUNK_INDEX_DUPLICATE",
+                    http_status=409,
+                    safe_message="同一文档的相同证据序号已存在",
+                    details={"chunk_index": item.chunk_index},
+                )
+            seen_index.add((item.document_id, item.chunk_index))
+
+            chunk = EvidenceChunk(
+                id=uuid4(),
+                document_id=item.document_id,
+                candidate_profile_id=item.candidate_profile_id,
+                chunk_index=item.chunk_index,
+                section_type=item.section_type,
+                locator_json=item.locator.model_dump(),
+                text=item.text,
+                text_sha256=_sha256(item.text),
+                created_at=datetime.now(UTC),
+            )
+            await self._chunks.save(chunk)
+            created.append(chunk)
+        return [EvidenceChunkResponse.model_validate(c) for c in created]
+
+    async def list_evidence(
+        self,
+        *,
+        actor: Actor,
+        profile_id: UUID,
+    ) -> list[EvidenceChunkResponse]:
+        profile = await self._profiles.get(profile_id)
+        if profile is None:
+            raise app_error(
+                code="PROFILE_NOT_FOUND",
+                http_status=404,
+                safe_message="候选人资料不存在",
+            )
+        chunks = await self._chunks.list_by_profile(profile_id)
+        return [EvidenceChunkResponse.model_validate(c) for c in chunks]
