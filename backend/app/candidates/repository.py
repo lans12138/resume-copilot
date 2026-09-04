@@ -19,6 +19,7 @@ from backend.app.candidates.models import (
     CandidateProfileStatus,
     EvidenceChunk,
 )
+from backend.app.retrieval.models import ReadyProfileView
 
 
 class CandidateRepository(Protocol):
@@ -96,6 +97,28 @@ class SqlCandidateProfileRepository:
                 )
             )
         )
+
+    async def list_ready_views(self) -> list[ReadyProfileView]:
+        """READY profile projections joined with the candidate display name."""
+        result = await self.session.execute(
+            select(CandidateProfile, Candidate.display_name)
+            .join(Candidate, Candidate.id == CandidateProfile.candidate_id)
+            .where(CandidateProfile.status == CandidateProfileStatus.READY)
+        )
+        views: list[ReadyProfileView] = []
+        for profile, display_name in result.all():
+            views.append(
+                ReadyProfileView(
+                    profile_id=profile.id,
+                    display_name=display_name,
+                    normalized_skills=list(profile.normalized_skills),
+                    years_experience=float(profile.years_experience)
+                    if profile.years_experience is not None
+                    else None,
+                    education_level=profile.education_level,
+                )
+            )
+        return views
 
 
 class SqlEvidenceChunkRepository:

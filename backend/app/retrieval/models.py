@@ -46,6 +46,22 @@ class ReadyProfile:
 
 
 @dataclass(frozen=True)
+class ReadyProfileView:
+    """Display projection of a READY profile for the candidate list UI.
+
+    Adds the human-readable ``display_name`` (owned by ``Candidate``) on top of
+    the retrieval projection so the ranking preview can render names without the
+    retrieval layer depending on the candidate aggregate.
+    """
+
+    profile_id: UUID
+    display_name: str
+    normalized_skills: list[str]
+    years_experience: float | None
+    education_level: str | None
+
+
+@dataclass(frozen=True)
 class ChunkVector:
     """One evidence chunk's embedding, bound to its profile."""
 

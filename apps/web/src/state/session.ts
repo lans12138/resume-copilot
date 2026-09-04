@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import type { CurrentUser, JobStatus } from "../api/types"
+import type { ChannelName, CurrentUser, HardRuleOutcome, JobStatus } from "../api/types"
 
 const SESSION_KEY = "resume-copilot.session"
 interface StoredSession { token: string; user: CurrentUser }
@@ -22,10 +22,14 @@ interface AppState {
   accessToken: string | null
   currentUser: CurrentUser | null
   jobStatusFilter: JobStatus | "ALL"
+  candidateHardRule: HardRuleOutcome | "ALL"
+  candidateChannel: ChannelName | "ALL"
   sidebarOpen: boolean
   setSession: (token: string, user: CurrentUser, persist: boolean) => void
   clearSession: () => void
   setJobStatusFilter: (status: JobStatus | "ALL") => void
+  setCandidateHardRule: (outcome: HardRuleOutcome | "ALL") => void
+  setCandidateChannel: (channel: ChannelName | "ALL") => void
   setSidebarOpen: (open: boolean) => void
 }
 
@@ -33,6 +37,8 @@ export const useAppStore = create<AppState>((set) => ({
   accessToken: initialSession?.token ?? null,
   currentUser: initialSession?.user ?? null,
   jobStatusFilter: "ALL",
+  candidateHardRule: "ALL",
+  candidateChannel: "ALL",
   sidebarOpen: false,
   setSession: (token, user, persist) => {
     if (persist) window.sessionStorage.setItem(SESSION_KEY, JSON.stringify({ token, user }))
@@ -44,5 +50,7 @@ export const useAppStore = create<AppState>((set) => ({
     set({ accessToken: null, currentUser: null })
   },
   setJobStatusFilter: (jobStatusFilter) => set({ jobStatusFilter }),
+  setCandidateHardRule: (candidateHardRule) => set({ candidateHardRule }),
+  setCandidateChannel: (candidateChannel) => set({ candidateChannel }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
 }))

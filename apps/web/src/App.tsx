@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { useState } from "react"
 import { useAppStore } from "./state/session"
+import { CandidatesPage } from "./pages/CandidatesPage"
 import { JobDetailPage } from "./pages/JobDetailPage"
 import { JobsPage } from "./pages/JobsPage"
 import { LoginPage } from "./pages/LoginPage"
@@ -24,6 +25,10 @@ function WorkspaceLayout() {
       <NavLink className="brand" to="/jobs" aria-label="Resume Copilot 岗位工作台">
         <span className="brand-mark">RC</span><span><strong>Resume Copilot</strong><small>招聘协作工作台</small></span>
       </NavLink>
+      <nav className="topbar-nav" aria-label="主导航">
+        <NavLink to="/jobs">岗位</NavLink>
+        <NavLink to="/candidates">候选人</NavLink>
+      </nav>
       <div className="user-menu"><span><strong>{user?.username}</strong><small>{user?.role === "HIRING_MANAGER" ? "招聘主管" : user?.role}</small></span><button className="button button-ghost button-small" type="button" onClick={logout}>退出登录</button></div>
     </header>
     <main className="workspace-content"><Outlet /></main>
@@ -36,6 +41,7 @@ export function AppRoutes() {
     <Route element={<AuthGuard />}><Route element={<WorkspaceLayout />}>
       <Route path="/jobs" element={<JobsPage />} />
       <Route path="/jobs/:jobId" element={<JobDetailPage />} />
+      <Route path="/candidates" element={<CandidatesPage />} />
     </Route></Route>
     <Route path="*" element={<Navigate to="/jobs" replace />} />
   </Routes>

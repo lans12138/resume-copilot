@@ -10,10 +10,14 @@ on.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from backend.app.infrastructure.embedding import EmbeddingGateway
 from backend.app.retrieval.keyword import KeywordRecaller
 from backend.app.retrieval.models import (
     ChannelName,
+    JobQuery,
+    ReadyProfile,
     RecallBundle,
     RecallHit,
     RetrievalQuery,
@@ -23,12 +27,26 @@ from backend.app.retrieval.structured import StructuredRecaller
 from backend.app.retrieval.vector import VectorRecaller
 
 
+@dataclass(frozen=True)
+class RetrievalContext:
+    """Bundle plus the inputs needed to build a ranking snapshot."""
+
+    bundle: RecallBundle
+    job: JobQuery
+    profiles: list[ReadyProfile]
+
+
 class RetrievalService:
     def __init__(self, repository: RetrievalRepository, gateway: EmbeddingGateway) -> None:
         self._repository = repository
         self._gateway = gateway
 
-    async def run_recall(self, query: RetrievalQuery) -> RecallBundle:
+    async def run_recall_full(self, query: RetrievalQuery) -> RetrievalContext:
+        """Recall across enabled channels and return the bundle plus inputs.
+
+        Surfaces the ``JobQuery`` and READY ``ReadyProfile`` corpus used for
+        hard-rule evaluation so callers (IMP-017 preview) need a single call.
+        """
         job = await self._repository.get_job_query(query.job_version_id)
         profiles = await self._repository.list_ready_profiles()
         profile_ids = [profile.profile_id for profile in profiles]
@@ -46,9 +64,14 @@ class RetrievalService:
             job_embedding = (await self._gateway.embed([job.search_text]))[0]
             vector_hits = VectorRecaller().recall(job_embedding, chunk_vectors)
 
-        return RecallBundle(
+        bundle = RecallBundle(
             job_version_id=query.job_version_id,
             structured=structured_hits,
             keyword=keyword_hits,
             vector=vector_hits,
         )
+        return RetrievalContext(bundle=bundle, job=job, profiles=profiles)
+
+    async def run_recall(self, query: RetrievalQuery) -> RecallBundle:
+        """Recall across enabled channels and return the merged bundle (IMP-014)."""
+        return (await self.run_recall_full(query)).bundle

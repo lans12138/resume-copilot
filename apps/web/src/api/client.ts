@@ -1,4 +1,4 @@
-import type { ApiErrorPayload, Assignment, AssignmentList, CurrentUser, Job, JobInput, JobList, JobStatus, TokenResponse } from "./types"
+import type { ApiErrorPayload, Assignment, AssignmentList, CandidateFilter, CandidateList, CurrentUser, Job, JobInput, JobList, JobStatus, TokenResponse } from "./types"
 
 const API_BASE_PATH = import.meta.env.VITE_API_BASE_PATH ?? "/api/v1"
 
@@ -58,4 +58,11 @@ export const api = {
   listAssignments: (token: string, jobId: string) => request<AssignmentList>(`/jobs/${jobId}/assignments`, {}, token),
   grantAssignment: (token: string, jobId: string, userId: string) => request<Assignment>(`/jobs/${jobId}/assignments`, { method: "POST", body: JSON.stringify({ user_id: userId }) }, token),
   revokeAssignment: (token: string, jobId: string, userId: string) => request<void>(`/jobs/${jobId}/assignments/${userId}`, { method: "DELETE" }, token),
+  listCandidates: (token: string, jobId: string, filters?: CandidateFilter) => {
+    const params = new URLSearchParams()
+    if (filters?.hard_rule && filters.hard_rule !== "ALL") params.set("hard_rule", filters.hard_rule)
+    if (filters?.channel && filters.channel !== "ALL") params.set("channel", filters.channel)
+    const query = params.toString()
+    return request<CandidateList>(`/jobs/${jobId}/candidates${query ? `?${query}` : ""}`, {}, token)
+  },
 }

@@ -16,6 +16,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.core.errors import AppError
+from backend.app.retrieval.models import HardRuleBundle
+from backend.app.retrieval.preview import CandidateRankingRow, CandidateRankingView
 
 # Education levels are a closed, normalized enum. Anything else is treated as
 # model garbage and rejected at the draft boundary.
@@ -294,3 +296,116 @@ class CandidateProfileEdit(BaseModel):
             if not name or len(name) > _MAX_SKILL:
                 raise ValueError("each skill must be a non-empty string <= 80 chars")
         return value
+
+
+class HardRuleResultResponse(BaseModel):
+    """One hard-rule verdict over a candidate (mirrors ``HardRuleResult``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: Literal["years_experience", "required_education", "required_skills"]
+    result: Literal["PASS", "FAIL", "UNKNOWN"]
+    reason_code: str
+    observed_value: object | None = None
+    required_value: object | None = None
+
+
+class HardRuleBundleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[HardRuleResultResponse]
+    overall: Literal["PASS", "FAIL", "UNKNOWN"]
+
+
+class CandidateRankingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_profile_id: UUID
+    snapshot_order: int
+    rrf_score: float
+    display_name: str
+    normalized_skills: list[str]
+    years_experience: float | None
+    education_level: str | None
+    structured_rank: int | None = None
+    structured_score: float | None = None
+    keyword_rank: int | None = None
+    keyword_score: float | None = None
+    vector_rank: int | None = None
+    vector_score: float | None = None
+    hard_rule: HardRuleBundleResponse | None = None
+
+    @classmethod
+    def from_row(cls, row: CandidateRankingRow) -> CandidateRankingResponse:
+        return cls(
+            candidate_profile_id=row.candidate_profile_id,
+            snapshot_order=row.snapshot_order,
+            rrf_score=row.rrf_score,
+            display_name=row.display_name,
+            normalized_skills=row.normalized_skills,
+            years_experience=row.years_experience,
+            education_level=row.education_level,
+            structured_rank=row.structured_rank,
+            structured_score=row.structured_score,
+            keyword_rank=row.keyword_rank,
+            keyword_score=row.keyword_score,
+            vector_rank=row.vector_rank,
+            vector_score=row.vector_score,
+            hard_rule=_hard_rule_response(row.hard_rule),
+        )
+
+
+def _hard_rule_response(bundle: HardRuleBundle | None) -> HardRuleBundleResponse | None:
+    if bundle is None:
+        return None
+    return HardRuleBundleResponse(
+        rules=[
+            HardRuleResultResponse(
+                rule_id=rule.rule_id.value,
+                result=rule.result.value,
+                reason_code=rule.reason_code,
+                observed_value=rule.observed_value,
+                required_value=rule.required_value,
+            )
+            for rule in bundle.rules
+        ],
+        overall=bundle.overall.value,
+    )
+
+
+class RetrievalConfigResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    top_k: int
+    rrf_k: int
+    structured_weight: float
+    keyword_weight: float
+    vector_weight: float
+    rule_version: str
+
+
+class CandidateListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: UUID
+    job_version_id: UUID
+    total: int
+    items: list[CandidateRankingResponse]
+    config: RetrievalConfigResponse
+
+    @classmethod
+    def from_view(cls, view: CandidateRankingView, job_id: UUID) -> CandidateListResponse:
+        return cls(
+            job_id=job_id,
+            job_version_id=view.job_version_id,
+            total=view.total,
+            items=[CandidateRankingResponse.from_row(row) for row in view.rows],
+            config=RetrievalConfigResponse(
+                top_k=view.config.top_k,
+                rrf_k=view.config.rrf_k,
+                structured_weight=view.config.structured_weight,
+                keyword_weight=view.config.keyword_weight,
+                vector_weight=view.config.vector_weight,
+                rule_version=view.config.rule_version,
+            ),
+        )
