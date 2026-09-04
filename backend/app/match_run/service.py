@@ -49,6 +49,7 @@ from backend.app.match_run.repository import (
     MatchRunCandidateRepository,
     MatchRunRepository,
 )
+from backend.app.reports.service import EvidenceProvider, ReportService
 from backend.app.retrieval.models import FusedCandidate, HardRuleBundle, RankingSnapshot
 
 
@@ -133,6 +134,8 @@ class MatchRunService:
         match_run: MatchRun,
         application_ids: Mapping[UUID, UUID],
         fail_profiles: Set[UUID] | None = None,
+        report_service: ReportService | None = None,
+        evidence_provider: EvidenceProvider | None = None,
     ) -> MatchRun:
         """Run the full graph for one MatchRun, terminating it on success/failure.
 
@@ -152,7 +155,22 @@ class MatchRunService:
             run, match_run, snapshot, application_ids, faults
         )
 
-        await self._aggregate(run, snapshot, failed_ids)
+        status = await self._aggregate(run, snapshot, failed_ids)
+        # Gate G4: a successful MatchRun persists evidence-backed reports for its
+        # COMPLETED candidates. Report generation is optional so IMP-019 callers
+        # (and fault-injection tests) are unaffected; a failed run writes none.
+        if (
+            status == RunStatus.COMPLETED
+            and report_service is not None
+            and evidence_provider is not None
+        ):
+            candidates = await self._candidates.get_candidates(run.id)
+            await report_service.generate_for_run(
+                run=run,
+                match_run=match_run,
+                candidates=candidates,
+                evidence=evidence_provider,
+            )
         return match_run
 
     async def _retrieve_candidates(
@@ -291,7 +309,7 @@ class MatchRunService:
 
     async def _aggregate(
         self, run: AgentRun, snapshot: RankingSnapshot, failed_ids: list[UUID]
-    ) -> None:
+    ) -> RunStatus:
         await self._append(
             run,
             AgentEventType.NODE_STARTED,
@@ -338,6 +356,7 @@ class MatchRunService:
                 safe_payload={"failed_candidate_ids": [str(p) for p in failed_ids]},
             )
             await self._runs.set_status(run.id, RunStatus.COMPLETED, finished=True)
+        return status
 
     async def _node(
         self, run: AgentRun, name: str, payload: dict[str, object]
