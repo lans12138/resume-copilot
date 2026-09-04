@@ -15,6 +15,8 @@ param(
         'document-upload-test',
         'parser-test',
         'migration-test',
+        'seed',
+        'reset-demo',
         'web',
         'backend-lint',
         'backend-typecheck',
@@ -155,6 +157,12 @@ try {
         }
         'migration-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_migrations.ps1')
+        }
+        'seed' {
+            Invoke-Checked 'docker' @('compose', '--profile', 'tools', 'run', '--rm', '--build', 'seed')
+        }
+        'reset-demo' {
+            Invoke-Checked 'docker' @('compose', '--profile', 'tools', 'run', '--rm', '--build', 'seed', '--', '--reset')
         }
         'web' {
             Invoke-WebTool @('run', 'dev', '--', '--host', '0.0.0.0')

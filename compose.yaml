@@ -139,6 +139,28 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  seed:
+    image: resume-copilot-api:local
+    build: *backend-build
+    profiles:
+      - tools
+    restart: "no"
+    environment: *backend-environment
+    volumes:
+      # The runtime image does not bundle scripts/; mount it read-only so the
+      # seeder can import the backend package and run against the live database.
+      - ./scripts:/workspace/scripts:ro
+    command:
+      - python
+      - scripts/seed_demo_data.py
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   backend:
     driver: bridge
