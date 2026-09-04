@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     chat_model: str = "qwen3.7-plus"
     model_timeout_seconds: int = Field(default=60, gt=0, le=600)
     embedding_model: str = "qwen3.7-text-embedding"
-    embedding_dimension: Literal[1024] = 1024
+    embedding_dimension: int = 1024
     embedding_batch_size: int = Field(default=16, gt=0, le=256)
     mock_model_mode: bool = True
 

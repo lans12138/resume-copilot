@@ -37,7 +37,12 @@ include = ["apps.api*", "apps.worker*", "apps.scheduler*", "backend*"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # starlette 1.6.0 still references the deprecated anyio.abc.BlockingPortal alias
+    # at import time; harmless for our TestClient-based smoke/contract tests.
+    "ignore:.*BlockingPortal.*:DeprecationWarning",
+]
 pythonpath = ["."]
 testpaths = ["tests"]
 
