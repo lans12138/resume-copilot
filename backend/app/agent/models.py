@@ -20,6 +20,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -29,6 +30,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -109,6 +111,23 @@ class AgentRun(Base):
     config_snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     # Optimistic-lock version for the aggregate root.
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Cancellation marker (§5.4/§11.9): set before the run enters CANCELLED.
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancel_requested_by: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Failure diagnostics (§4.5/§11.8): a FAILED run is retryable only when set.
+    retryable: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message_safe: Mapped[str | None] = mapped_column(String(500))
+    failed_node: Mapped[str | None] = mapped_column(String(128))
+    # Run snapshot schema version; fixed at creation, bumped on protocol change.
+    snapshot_version: Mapped[str] = mapped_column(
+        String(64), default="v1", server_default=text("'v1'"), nullable=False
+    )
+    # Initiating user; nullable to avoid friction with the engine-created run.
+    created_by: Mapped[UUID | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

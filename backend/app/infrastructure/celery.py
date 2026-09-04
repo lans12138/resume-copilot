@@ -56,7 +56,9 @@ def make_celery_app(settings: Settings) -> Celery:
     # Register task modules so `celery -A backend.app.infrastructure.celery:app`
     # discovers documents.parse / embeddings.generate_chunks etc. without a
     # manual import in the worker entrypoint. Imports are lazy (at finalize).
-    app.autodiscover_tasks(["backend.app.documents", "backend.app.candidates"])
+    app.autodiscover_tasks(
+        ["backend.app.documents", "backend.app.candidates", "backend.app.maintenance"]
+    )
     return app
 
 

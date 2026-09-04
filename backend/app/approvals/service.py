@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from backend.app.agent.models import AgentRun, RunStatus
 from backend.app.agent.service import RunService
@@ -103,6 +103,27 @@ class ApprovalService:
         """Current PENDING approval for a run (or None); powers ApplicationRunDetail."""
         return await self._approval_repo.get_pending_by_run(application_run_id)
 
+    async def mark_expired(self, approval_id: UUID, *, reason: str) -> Approval | None:
+        """Set a PENDING approval to EXPIRED (idempotent); powers cancel + timeout.
+
+        ``reason`` is ``TIMEOUT`` (sweeper, §11.8) or ``RUN_CANCELLED`` (cancel,
+        §11.9). A non-PENDING approval (already decided, expired, or failed) is
+        left untouched and returned as-is, so concurrent decide/expire calls can
+        never apply a second transition (the same "decide exactly once" guard the
+        decision path relies on).
+
+        This method does **not** authorize: it is called by internal sweeps and
+        by the cancellation flow that has already authorized the actor on the job.
+        """
+        approval = await self._approval_repo.get_approval(approval_id)
+        if approval is None or approval.status != ApprovalStatus.PENDING:
+            return approval
+        approval.status = ApprovalStatus.EXPIRED
+        approval.expiration_reason = reason
+        approval.version += 1
+        await self._approval_repo.save_approval(approval)
+        return approval
+
     async def create_approval(
         self,
         actor: Actor,
@@ -131,6 +152,7 @@ class ApprovalService:
 
         expires_at = expires_at or (self._now() + DEFAULT_APPROVAL_TTL)
         approval = Approval(
+            id=uuid4(),
             application_run_id=application_run.run_id,
             action_type=action_type,
             status=ApprovalStatus.PENDING,

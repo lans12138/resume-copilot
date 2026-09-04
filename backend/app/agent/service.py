@@ -52,6 +52,7 @@ class RunService:
             attempt=attempt,
             next_event_sequence=0,
             version=1,
+            retryable=False,
             config_snapshot_json=config_snapshot,
         )
         await self._repository.save_run(run)
@@ -84,16 +85,29 @@ class RunService:
         events = await self._repository.list_events(run_id)
         return sorted(events, key=lambda e: e.sequence)
 
-    async def mark_failed(self, run: AgentRun, *, reason: str) -> None:
+    async def mark_failed(
+        self,
+        run: AgentRun,
+        *,
+        reason: str,
+        retryable: bool = False,
+        error_code: str | None = None,
+        failed_node: str | None = None,
+    ) -> None:
         await self._repository.append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=AgentEventType.RUN_FAILED,
-            node=None,
+            node=failed_node,
             status=RunStatus.FAILED.value,
             message_key="run.failed",
-            safe_payload={"reason": reason},
+            safe_payload={"reason": reason, "error_code": error_code, "retryable": retryable},
         )
+        run.retryable = retryable
+        if error_code is not None:
+            run.error_code = error_code
+        if failed_node is not None:
+            run.failed_node = failed_node
         await self._repository.set_status(run.id, RunStatus.FAILED, finished=True)
 
     async def cancel_run(self, run: AgentRun, *, reason: str) -> None:

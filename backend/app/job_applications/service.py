@@ -72,8 +72,16 @@ class ApplicationRunService:
         actor: Actor,
         application_id: UUID,
         match_report_id: UUID | None = None,
+        *,
+        attempt: int = 1,
     ) -> tuple[AgentRun, ApplicationRun]:
-        """Claim the slot and run the graph to WAITING_APPROVAL (409 if taken)."""
+        """Claim the slot and run the graph to WAITING_APPROVAL (409 if taken).
+
+        ``attempt`` is 1 for a fresh run and ``parent.attempt + 1`` for a retry
+        after an ``APPROVAL_EXPIRED`` timeout (§11.8): the expired run is FAILED
+        with ``retryable=True`` and its slot cleared, so a new attempt can reclaim
+        it and create a *new* approval (the TIMEOUT retry rule, not a re-decide).
+        """
         application = await self._app_repo.get_application(application_id)
         if application is None:
             raise app_error("APPLICATION_NOT_FOUND", http_status=404, safe_message="投递不存在")
@@ -101,7 +109,7 @@ class ApplicationRunService:
             },
             run_id=run_id,
             thread_id=run_id.hex,
-            attempt=1,
+            attempt=attempt,
         )
         # Atomically claim the slot; raises 409 if already occupied.
         await self._app_repo.claim_active_run(application_id, run_id)
@@ -120,7 +128,7 @@ class ApplicationRunService:
             "candidate_id": str(application.candidate_id),
             "current_status": application.status.value,
             "match_report_id": str(match_report_id) if match_report_id else None,
-            "attempt": 1,
+            "attempt": attempt,
             "proposed_status": "SHORTLISTED",
         }
         result = await self._run_service.run_graph(run, graph, initial_state)
@@ -235,7 +243,41 @@ class ApplicationRunService:
 
         await self._run_service.cancel_run(agent_run, reason="user_cancel")
         await self._app_repo.clear_active_run(application_run.application_id, run_id)
+        # Collaborative cancellation: a PENDING approval rides into EXPIRED with
+        # reason RUN_CANCELLED so the (now cancelled) run can never be decided and
+        # is not retryable (§11.9 step 4). An already-decided/expired approval is
+        # left untouched by mark_expired's idempotent guard.
+        pending = await self._approval_service.get_pending_by_run(run_id)
+        if pending is not None and pending.status == ApprovalStatus.PENDING:
+            await self._approval_service.mark_expired(pending.id, reason="RUN_CANCELLED")
         return agent_run, application_run
+
+    async def retry_application_run(
+        self, actor: Actor, run_id: UUID
+    ) -> tuple[AgentRun, ApplicationRun]:
+        """Retry a FAILED retryable run as a new attempt (§11.8 step 5).
+
+        A ``TIMEOUT``-expired run is left FAILED with ``retryable=True`` and its
+        slot cleared, so a fresh attempt can reclaim the slot and create a *new*
+        approval. The old run's errors are left in place (its history is kept); the
+        new attempt starts clean. A non-retryable or non-FAILED run is rejected with
+        ``RUN_NOT_RETRYABLE``/409, guarding against double execution.
+        """
+        parent = await self.get_application_run(run_id)
+        if parent is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+        agent_run, application_run = parent
+        if agent_run.status != RunStatus.FAILED or not agent_run.retryable:
+            raise app_error(
+                "RUN_NOT_RETRYABLE",
+                http_status=409,
+                safe_message="该流程不可重试",
+                details={"status": agent_run.status.value, "retryable": agent_run.retryable},
+            )
+        # Reclaim the slot (now free after the timeout clear) under a new attempt.
+        return await self.create_application_run(
+            actor, application_run.application_id, attempt=agent_run.attempt + 1
+        )
 
     async def mark_failed(
         self, actor: Actor, run_id: UUID, *, reason: str
