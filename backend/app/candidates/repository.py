@@ -44,6 +44,12 @@ class EvidenceChunkRepository(Protocol):
 
     async def exists_index(self, document_id: UUID, chunk_index: int) -> bool: ...
 
+    async def commit(self) -> None: ...
+
+    async def rollback(self) -> None: ...
+
+    async def close(self) -> None: ...
+
 
 class SqlCandidateRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -116,3 +122,12 @@ class SqlEvidenceChunkRepository:
             )
         )
         return bool(count)
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
+    async def close(self) -> None:
+        await self.session.close()

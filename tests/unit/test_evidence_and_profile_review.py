@@ -101,6 +101,15 @@ class FakeEvidenceChunkRepository:
             c.document_id == document_id and c.chunk_index == chunk_index for c in self.chunks
         )
 
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
 
 def _service(
     profile: CandidateProfile,

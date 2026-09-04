@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
+from backend.app.candidates.embedding_service import EmbeddingEnqueuer
 from backend.app.candidates.models import (
     Candidate,
     CandidateProfile,
@@ -149,6 +150,7 @@ class ProfileReviewService:
         profile_id: UUID,
         edit: CandidateProfileEdit,
         expected_version: int,
+        enqueue: EmbeddingEnqueuer | None = None,
     ) -> CandidateProfileResponse:
         _assert_hr(actor)
 
@@ -193,6 +195,11 @@ class ProfileReviewService:
         profile.confirmed_at = datetime.now(UTC)
         profile.version += 1
         await self._profiles.save(profile)
+        # §7.2: after the profile is confirmed and committed, publish the embedding
+        # task for its evidence chunks. Chunks were persisted in an earlier request,
+        # so a worker picking this up before the route commits sees no gap.
+        if enqueue is not None:
+            enqueue.enqueue(profile_id=profile_id)
         return CandidateProfileResponse.model_validate(profile)
 
     async def create_evidence_chunks(
