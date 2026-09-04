@@ -13,6 +13,7 @@ param(
         'compose-test',
         'job-test',
         'document-upload-test',
+        'parser-test',
         'migration-test',
         'web',
         'backend-lint',
@@ -147,6 +148,10 @@ try {
         }
         'document-upload-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')
+        }
+        'parser-test' {
+            Build-BackendDevelopmentImage
+            Invoke-BackendTool @('pytest', '-q', 'tests/unit/test_parsers.py')
         }
         'migration-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_migrations.ps1')
