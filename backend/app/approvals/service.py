@@ -124,6 +124,36 @@ class ApprovalService:
         await self._approval_repo.save_approval(approval)
         return approval
 
+    async def mark_executed(self, approval: Approval, *, result: dict[str, Any]) -> None:
+        """Transition an APPROVED/EDITED/EXECUTION_FAILED approval to EXECUTED.
+
+        Called by the execution service *after* the side effect committed (§11.6/
+        §11.7). A second call is idempotent: once ``EXECUTED`` the approval is the
+        source of truth that the side effect already happened, so a duplicate
+        request returns without re-applying it. ``EXECUTION_FAILED`` is allowed in
+        so the same idempotency key can be retried under controlled conditions
+        (§11.7, line 609).
+        """
+        approval.status = ApprovalStatus.EXECUTED
+        approval.executed_at = self._now()
+        approval.execution_result_json = result
+        approval.version += 1
+        await self._approval_repo.save_approval(approval)
+
+    async def mark_execution_failed(
+        self, approval: Approval, *, error_code: str
+    ) -> None:
+        """Mark a retryable execution failure (§11.7, line 977).
+
+        The run is left to the caller to mark retryable-FAILED; this only moves
+        the approval so a future request with the same idempotency key can retry
+        rather than being treated as already executed.
+        """
+        approval.status = ApprovalStatus.EXECUTION_FAILED
+        approval.execution_error_code = error_code
+        approval.version += 1
+        await self._approval_repo.save_approval(approval)
+
     async def create_approval(
         self,
         actor: Actor,

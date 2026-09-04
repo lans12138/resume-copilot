@@ -118,3 +118,36 @@ class ApplicationRun(Base):
     completion_reason: Mapped[str | None] = mapped_column(String(64))
     question_set_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     question_schema_version: Mapped[str | None] = mapped_column(String(32))
+
+
+class ApplicationStatusHistory(Base):
+    """Append-only audit of JobApplication.status transitions (§11.6).
+
+    Every side-effecting status change is recorded here inside the same
+    transaction that updates the application and executes the approval, so the
+    history, the new status, and the executed approval are mutually consistent
+    (§11.6, line 959). It is never updated in place.
+    """
+
+    __tablename__ = "application_status_history"
+    __table_args__ = (
+        Index("ix_application_status_history_application", "application_id"),
+        Index("ix_application_status_history_approval", "approval_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    application_id: Mapped[UUID] = mapped_column(
+        ForeignKey("job_applications.id"), nullable=False
+    )
+    from_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Actor who decided the approval that caused the change (audit only).
+    changed_by: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Run and approval that drove the change; null for manual edits.
+    run_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    approval_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    # Bounded, safe reason (never free text from untrusted documents).
+    safe_reason: Mapped[str | None] = mapped_column(String(256))
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

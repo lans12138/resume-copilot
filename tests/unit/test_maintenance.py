@@ -169,12 +169,18 @@ def test_expire_skips_already_decided_approval() -> None:
 async def _expire_skips_decided() -> None:
     _a, app_repo, _r, _ar, _rs, approval_service, _svc, maintenance, _ck = _core()
     agent_run, _app_run, _app_id = await _create_run(_svc, app_repo)
-    approval = await approval_service.get_pending_by_run(agent_run.id)
-    assert approval is not None
-    # Decide first (APPROVE resumes the graph to COMPLETED).
-    await _svc.decide_approval(_actor(), approval.id, DecisionAction.APPROVE, expected_version=1)
-    # Now the sweeper runs against the same (already decided) approval.
-    approval.expires_at = FIXED_NOW - timedelta(minutes=1)
+    first = await approval_service.get_pending_by_run(agent_run.id)
+    assert first is not None
+    # First decision (APPROVE) applies the status change and resumes the graph to
+    # the second (schedule) approval gate — the run stays WAITING_APPROVAL.
+    await _svc.decide_approval(_actor(), first.id, DecisionAction.APPROVE, expected_version=1)
+    second = await approval_service.get_pending_by_run(agent_run.id)
+    assert second is not None
+    # Second decision (APPROVE) completes the run; the slot is released.
+    await _svc.decide_approval(_actor(), second.id, DecisionAction.APPROVE, expected_version=1)
+    # Now the sweeper runs against the same (already decided) approvals.
+    for appr in (first, second):
+        appr.expires_at = FIXED_NOW - timedelta(minutes=1)
     expired = await maintenance.expire_pending_approvals(before=FIXED_NOW)
     assert expired == 0
     # The run is untouched: still COMPLETED, not FAILED.

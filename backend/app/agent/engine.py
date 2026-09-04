@@ -40,7 +40,15 @@ class GraphNode:
 
 
 class RunGraph:
-    """Ordered nodes plus the node after which the engine must pause."""
+    """Ordered nodes plus the point(s) at which the engine must pause.
+
+    ``interrupt_after`` is the primary pause node (always pauses on first
+    execution, e.g. the human_review gate). ``interrupt_after_conditional`` maps
+    additional node names to a guard ``(state) -> bool``; the engine pauses at
+    such a node only when the guard returns True, on both the initial execution
+    and a resume (so a second approval gate like ``wait_schedule_approval`` can
+    pause a resumed run, detailed design §10/§11).
+    """
 
     def __init__(
         self,
@@ -48,10 +56,12 @@ class RunGraph:
         *,
 
         interrupt_after: str | None = None,
+        interrupt_after_conditional: dict[str, Callable[[dict[str, Any]], bool]] | None = None,
         interrupt_status: RunStatus = RunStatus.INTERRUPTED,
     ) -> None:
         self.nodes = list(nodes)
         self.interrupt_after = interrupt_after
+        self.interrupt_after_conditional = interrupt_after_conditional
         self.interrupt_status = interrupt_status
         self._validate()
 
@@ -61,6 +71,12 @@ class RunGraph:
             raise ValueError("graph node names must be unique")
         if self.interrupt_after is not None and self.interrupt_after not in names:
             raise ValueError(f"interrupt_after node {self.interrupt_after!r} not in graph")
+        if self.interrupt_after_conditional:
+            for node_name in self.interrupt_after_conditional:
+                if node_name not in names:
+                    raise ValueError(
+                        f"interrupt_after_conditional node {node_name!r} not in graph"
+                    )
 
     def index_of(self, name: str) -> int:
         for i, node in enumerate(self.nodes):
@@ -107,8 +123,16 @@ class RunEngine:
         self,
         run: AgentRun,
         graph: RunGraph,
+        *,
+        state_override: dict[str, Any] | None = None,
     ) -> InterruptResult | None:
-        """Continue a paused run strictly from the checkpoint's next_node."""
+        """Continue a paused run strictly from the checkpoint's next_node.
+
+        ``state_override`` merges into the checkpoint state before continuing, so
+        a decision can inject the *decided* target (e.g. an EDIT to a non-default
+        status) without rewriting the checkpointer (§11.5). Only bounded, typed
+        keys are allowed — never untrusted document content.
+        """
         checkpoint = await self._checkpointer.get(run.thread_id, self._ns, "")
         if checkpoint is None:
             raise RuntimeError(f"no checkpoint for thread {run.thread_id}; cannot resume")
@@ -118,6 +142,10 @@ class RunEngine:
         if next_node == "__END__":
             return None
         start_index = graph.index_of(next_node)
+        # Merge the override into the resumed state (override wins).
+        state = checkpoint.checkpoint
+        if state_override:
+            state = {**state, **state_override}
         await self._repository.append_event(
             run_id=run.id,
             run_type=run.run_type,
@@ -129,7 +157,7 @@ class RunEngine:
         )
         await self._repository.set_status(run.id, RunStatus.RUNNING)
         return await self._run_from(
-            run, graph, checkpoint.checkpoint, start_index=start_index, resumed=True
+            run, graph, state, start_index=start_index, resumed=True
         )
 
     async def _run_from(
@@ -144,6 +172,7 @@ class RunEngine:
         interrupt_index = (
             graph.index_of(graph.interrupt_after) if graph.interrupt_after else -1
         )
+        conditional_guards = graph.interrupt_after_conditional or {}
         for index in range(start_index, len(graph.nodes)):
             node = graph.nodes[index]
             await self._repository.append_event(
@@ -166,7 +195,15 @@ class RunEngine:
                 safe_payload={"state_keys": sorted(state.keys())},
             )
 
-            if index == interrupt_index and not resumed:
+            # Primary interrupt fires only on the initial execution (a resumed
+            # run never re-enters the primary node). Conditional interrupts fire
+            # on every pass whose guard is satisfied, including resumes, so a
+            # second approval gate can pause a resumed run.
+            primary_hit = index == interrupt_index and not resumed
+            conditional_hit = node.name in conditional_guards and conditional_guards[node.name](
+                state
+            )
+            if primary_hit or conditional_hit:
                 next_node = (
                     graph.nodes[index + 1].name if index + 1 < len(graph.nodes) else "__END__"
                 )

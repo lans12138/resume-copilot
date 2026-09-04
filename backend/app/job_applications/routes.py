@@ -28,6 +28,8 @@ from backend.app.approvals.service import ApprovalService
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import app_error
+from backend.app.interviews.repository import InMemoryInterviewRepository
+from backend.app.interviews.schedule import MockScheduleBackend
 from backend.app.job_applications.repository import (
     SqlApplicationRunRepository,
     SqlJobApplicationRepository,
@@ -39,6 +41,7 @@ from backend.app.job_applications.schemas import (
     RunAccepted,
 )
 from backend.app.job_applications.service import ApplicationRunService
+from backend.app.job_applications.side_effects import ApplicationSideEffectService
 from backend.app.jobs.service import JobService
 from backend.app.reports.models import MatchReport
 
@@ -70,6 +73,20 @@ async def application_run_service(request: Request) -> AsyncGenerator[Applicatio
             app_repo=app_repo,
             run_service=run_service,
         )
+        # MVP schedule backend: in-process MockScheduleBackend, idempotent on the
+        # approval key. A real calendar would swap this for an Outbox-backed client
+        # (§11.7). The interview store is per-request here; production shares the
+        # session-scoped repository (IMP-030 wires PG).
+        interview_repo = InMemoryInterviewRepository()
+        schedule_backend = MockScheduleBackend()
+        side_effects = ApplicationSideEffectService(
+            approval_service=approval_service,
+            app_repo=app_repo,
+            arun_repo=arun_repo,
+            run_service=run_service,
+            interview_repo=interview_repo,
+            schedule_backend=schedule_backend,
+        )
         yield ApplicationRunService(
             app_repo=app_repo,
             arun_repo=arun_repo,
@@ -77,6 +94,7 @@ async def application_run_service(request: Request) -> AsyncGenerator[Applicatio
             authorize=authorize,
             approval_service=approval_service,
             report_lookup=report_lookup,
+            side_effects=side_effects,
         )
 
 

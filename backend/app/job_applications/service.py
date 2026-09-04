@@ -26,13 +26,15 @@ from backend.app.agent.service import RunService
 from backend.app.approvals.models import Approval, ApprovalActionType, ApprovalStatus
 from backend.app.approvals.service import ApprovalService, DecisionAction
 from backend.app.auth.tokens import Actor
-from backend.app.core.errors import app_error
+from backend.app.core.errors import AppError, app_error
+from backend.app.interviews.schemas import ScheduleProposal
 from backend.app.job_applications.graph import build_application_graph
-from backend.app.job_applications.models import ApplicationRun
+from backend.app.job_applications.models import ApplicationRun, JobApplication
 from backend.app.job_applications.repository import (
     ApplicationRunRepository,
     JobApplicationRepository,
 )
+from backend.app.job_applications.side_effects import ApplicationSideEffectService
 
 
 class ApplicationAccess(Protocol):
@@ -59,6 +61,7 @@ class ApplicationRunService:
         authorize: ApplicationAccess,
         approval_service: ApprovalService,
         report_lookup: MatchReportLookup | None = None,
+        side_effects: ApplicationSideEffectService | None = None,
     ) -> None:
         self._app_repo = app_repo
         self._arun_repo = arun_repo
@@ -66,6 +69,9 @@ class ApplicationRunService:
         self._authorize = authorize
         self._approval_service = approval_service
         self._report_lookup = report_lookup
+        # Optional: when None, decide_approval drives the graph without applying
+        # the side effect (used by the IMP-022 state-machine tests).
+        self._side_effects = side_effects
 
     async def create_application_run(
         self,
@@ -163,11 +169,22 @@ class ApplicationRunService:
         expected_version: int,
         edited_params: dict[str, Any] | None = None,
     ) -> AgentRun:
-        """Decide the pending approval; resume the run or clear the slot.
+        """Decide a pending approval; apply the gated side effect and resume.
 
-        Mirrors detailed design §11.5: APPROVED/EDITED resume the graph from its
-        checkpoint (the active slot is cleared once the run reaches a terminal
-        state); REJECTED completes the run without a side effect and frees the slot.
+        Two-approval flow (detailed design §10/§11):
+
+        * ``REJECTED`` — completes the run without a side effect; the slot is freed.
+        * ``UPDATE_APPLICATION_STATUS`` (first approval) — applies the status change,
+          then resumes the graph. If the target is ``SHORTLISTED`` the graph pauses
+          a second time at ``wait_schedule_approval`` and a ``CREATE_INTERVIEW_SCHEDULE``
+          approval is created (slot held); otherwise the run completes and the slot
+          is cleared.
+        * ``CREATE_INTERVIEW_SCHEDULE`` (second approval) — applies the mock schedule,
+          resumes to the terminal node, and clears the slot. A retryable execution
+          failure leaves the run retryable-FAILED and frees the slot.
+
+        The side effect is applied by ``ApplicationSideEffectService`` exactly once,
+        gated by the approval idempotency key; this method only orchestrates.
         """
         approval, status = await self._approval_service.decide(
             actor,
@@ -179,30 +196,92 @@ class ApplicationRunService:
         application_run = await self._arun_repo.get_application_run(approval.application_run_id)
         if application_run is None:
             raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+        application = await self._app_repo.get_application(application_run.application_id)
+        if application is None:
+            raise app_error("APPLICATION_NOT_FOUND", http_status=404, safe_message="投递不存在")
+        run = await self._run_service.get_run(approval.application_run_id)
+        if run is None:
+            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
 
         if status == ApprovalStatus.REJECTED:
             await self._app_repo.clear_active_run(
                 application_run.application_id, approval.application_run_id
             )
-            rejected = await self._run_service.get_run(approval.application_run_id)
-            if rejected is None:
-                raise app_error(
-                    "APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在"
-                )
-            return rejected
+            return run
 
-        # APPROVED/EDITED: resume the graph from the checkpoint (§17.2). The
-        # current IMP-022 graph has no post-approval side-effect node, so resume
-        # runs straight to COMPLETED; IMP-024 adds update_application_status etc.
-        run = await self._run_service.get_run(approval.application_run_id)
-        if run is None:
-            raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
-        await self._run_service.resume_run(run, build_application_graph())
-        if run.status == RunStatus.COMPLETED:
-            await self._app_repo.clear_active_run(
-                application_run.application_id, approval.application_run_id
+        if approval.action_type is ApprovalActionType.UPDATE_APPLICATION_STATUS:
+            if self._side_effects is not None:
+                await self._side_effects.execute_update_status(actor, approval)
+            target = self._decided_target(approval)
+            await self._run_service.resume_run(
+                run, build_application_graph(), state_override={"proposed_status": target}
             )
-        return run
+            if run.status == RunStatus.WAITING_APPROVAL:
+                # Reached the second approval gate (SHORTLISTED path): create the
+                # schedule approval and keep the slot occupied.
+                await self._approval_service.create_approval(
+                    actor,
+                    agent_run=run,
+                    application_run=application_run,
+                    application=application,
+                    action_type=ApprovalActionType.CREATE_INTERVIEW_SCHEDULE,
+                    ordinal=2,
+                    proposed_params={
+                        "duration_minutes": 45,
+                        "timezone": "UTC",
+                        "interviewer_label": "Hiring Manager",
+                    },
+                )
+            else:
+                await self._app_repo.clear_active_run(
+                    application_run.application_id, approval.application_run_id
+                )
+            return run
+
+        if approval.action_type is ApprovalActionType.CREATE_INTERVIEW_SCHEDULE:
+            if self._side_effects is not None:
+                proposal = self._build_schedule_proposal(application, approval)
+                try:
+                    await self._side_effects.execute_create_schedule(
+                        actor, approval, proposal=proposal
+                    )
+                except AppError:
+                    # Retryable execution failure: the run is retryable-FAILED and
+                    # the slot is freed so a new attempt can retry (§11.7/§11.8).
+                    await self._app_repo.clear_active_run(
+                        application_run.application_id, approval.application_run_id
+                    )
+                    return run
+            await self._run_service.resume_run(run, build_application_graph())
+            if run.status == RunStatus.COMPLETED:
+                await self._app_repo.clear_active_run(
+                    application_run.application_id, approval.application_run_id
+                )
+            return run
+
+        raise app_error(
+            "APPROVAL_WRONG_ACTION",
+            http_status=409,
+            safe_message="未知审批类型",
+            details={"action_type": approval.action_type.value},
+        )
+
+    @staticmethod
+    def _decided_target(approval: Approval) -> str:
+        params = approval.final_params_json or approval.original_params_json or {}
+        return str(params.get("target_status", "SHORTLISTED")).upper()
+
+    @staticmethod
+    def _build_schedule_proposal(
+        application: JobApplication, approval: Approval
+    ) -> ScheduleProposal:
+        params = approval.final_params_json or approval.original_params_json or {}
+        return ScheduleProposal(
+            application_id=application.id,
+            duration_minutes=int(params.get("duration_minutes", 45)),
+            timezone=str(params.get("timezone", "UTC")),
+            interviewer_label=str(params.get("interviewer_label", "Hiring Manager")),
+        )
 
     async def get_application_run_detail(
         self, run_id: UUID

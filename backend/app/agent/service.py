@@ -74,9 +74,11 @@ class RunService:
         """Execute the graph from the start; returns an interrupt handle or None."""
         return await self._engine.execute(run, graph, initial_state)
 
-    async def resume_run(self, run: AgentRun, graph: RunGraph) -> InterruptResult | None:
+    async def resume_run(
+        self, run: AgentRun, graph: RunGraph, *, state_override: dict[str, Any] | None = None
+    ) -> InterruptResult | None:
         """Continue a paused run from its checkpoint; raises if none exists."""
-        return await self._engine.resume(run, graph)
+        return await self._engine.resume(run, graph, state_override=state_override)
 
     async def get_run(self, run_id: UUID) -> AgentRun | None:
         return await self._repository.get_run(run_id)

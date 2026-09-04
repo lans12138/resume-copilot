@@ -23,7 +23,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.errors import AppError, app_error
-from backend.app.job_applications.models import ApplicationRun, JobApplication
+from backend.app.job_applications.models import (
+    ApplicationRun,
+    ApplicationStatusHistory,
+    JobApplication,
+)
 
 
 def _not_found() -> AppError:
@@ -45,6 +49,10 @@ class JobApplicationRepository(Protocol):
         """Clear the slot only if it still points at ``expected_run_id``."""
         ...
 
+    async def append_status_history(self, history: ApplicationStatusHistory) -> None:
+        """Append one status-transition record (§11.6); never updated in place."""
+        ...
+
 
 class ApplicationRunRepository(Protocol):
     """Persistence contract for ApplicationRun child rows."""
@@ -61,6 +69,7 @@ class InMemoryJobApplicationRepository:
 
     def __init__(self) -> None:
         self._apps: dict[UUID, JobApplication] = {}
+        self._histories: dict[UUID, ApplicationStatusHistory] = {}
         self._lock = asyncio.Lock()
 
     async def save_application(self, application: JobApplication) -> None:
@@ -94,6 +103,10 @@ class InMemoryJobApplicationRepository:
             if app.active_application_run_id == expected_run_id:
                 app.active_application_run_id = None
                 app.version += 1
+
+    async def append_status_history(self, history: ApplicationStatusHistory) -> None:
+        async with self._lock:
+            self._histories[history.id] = history
 
 
 class SqlJobApplicationRepository:
@@ -140,6 +153,10 @@ class SqlJobApplicationRepository:
             ),
             {"aid": application_id, "rid": expected_run_id},
         )
+        await self._session.flush()
+
+    async def append_status_history(self, history: ApplicationStatusHistory) -> None:
+        self._session.add(history)
         await self._session.flush()
 
 

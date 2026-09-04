@@ -21,7 +21,7 @@ from backend.app.agent.checkpoint import InMemoryCheckpointer
 from backend.app.agent.models import AgentRun, RunStatus
 from backend.app.agent.repository import InMemoryAgentRunRepository
 from backend.app.agent.service import RunService
-from backend.app.approvals.models import ApprovalStatus
+from backend.app.approvals.models import ApprovalActionType, ApprovalStatus
 from backend.app.approvals.repository import InMemoryApprovalRepository
 from backend.app.approvals.service import ApprovalService, DecisionAction
 from backend.app.auth.models import UserRole
@@ -152,14 +152,26 @@ async def _approve_resume() -> None:
     approval = await approval_service.get_pending_by_run(agent_run.id)
     assert approval is not None
 
+    # First approval (status change) resumes the graph to the SECOND gate
+    # (SHORTLISTED needs a schedule approval) and the slot stays occupied.
     run = await svc.decide_approval(
         _actor(), approval.id, DecisionAction.APPROVE, expected_version=1
     )
-    # APPROVED resumes the (side-effect-free) graph to COMPLETED and frees the slot.
-    assert run.status is RunStatus.COMPLETED
+    assert run.status is RunStatus.WAITING_APPROVAL
     refreshed = await app_repo.get_application(app_id)
     assert refreshed is not None
-    assert refreshed.active_application_run_id is None
+    assert refreshed.active_application_run_id == run.id
+
+    # A second (schedule) approval is now pending; deciding it completes the run
+    # and frees the slot.
+    second = await approval_service.get_pending_by_run(run.id)
+    assert second is not None
+    assert second.action_type is ApprovalActionType.CREATE_INTERVIEW_SCHEDULE
+    run2 = await svc.decide_approval(_actor(), second.id, DecisionAction.APPROVE, expected_version=1)
+    assert run2.status is RunStatus.COMPLETED
+    refreshed2 = await app_repo.get_application(app_id)
+    assert refreshed2 is not None
+    assert refreshed2.active_application_run_id is None
 
 
 def test_reject_completes_without_side_effect() -> None:
@@ -297,10 +309,19 @@ async def _resume_after_restart() -> None:
         approval_service=approval_service2,
     )
 
+    # First approval (status) resumes to the second gate; decide it too.
     run = await svc2.decide_approval(
         _actor(), approval.id, DecisionAction.APPROVE, expected_version=1
     )
-    assert run.status is RunStatus.COMPLETED
+    assert run.status is RunStatus.WAITING_APPROVAL
+    second = await approval_service2.get_pending_by_run(run.id)
+    assert second is not None
+    assert second.action_type is ApprovalActionType.CREATE_INTERVIEW_SCHEDULE
+    # Second approval (schedule) — over the restarted service — completes the run.
+    run2 = await svc2.decide_approval(
+        _actor(), second.id, DecisionAction.APPROVE, expected_version=1
+    )
+    assert run2.status is RunStatus.COMPLETED
     refreshed = await app_repo.get_application(app_id)
     assert refreshed is not None
     assert refreshed.active_application_run_id is None
