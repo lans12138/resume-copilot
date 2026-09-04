@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from pydantic import JsonValue
 
 from backend.app.approvals.routes import router as approvals_router
@@ -15,7 +15,8 @@ from backend.app.core.context import get_request_id
 from backend.app.core.errors import AppError, register_exception_handlers
 from backend.app.core.health import check_readiness
 from backend.app.core.logging import configure_logging
-from backend.app.core.middleware import RequestContextMiddleware
+from backend.app.core.metrics import get_registry
+from backend.app.core.middleware import MetricsMiddleware, RequestContextMiddleware
 from backend.app.core.settings import Settings, get_settings
 from backend.app.documents.routes import router as documents_router
 from backend.app.infrastructure.runtime import RuntimeResources
@@ -57,6 +58,7 @@ def create_app(
         RequestContextMiddleware,
         request_id_header=resolved_settings.request_id_header,
     )
+    application.add_middleware(MetricsMiddleware)
     register_exception_handlers(application)
     application.include_router(auth_router)
     application.include_router(jobs_router)
@@ -90,5 +92,15 @@ def create_app(
             "request_id": get_request_id(),
             "dependencies": dependencies,
         }
+
+    @application.get("/api/v1/metrics", tags=["metrics"], response_model=None)
+    async def metrics(format: str | None = None) -> Response | JsonValue:
+        registry = get_registry()
+        if format == "prometheus":
+            return Response(
+                registry.render_prometheus(),
+                media_type="text/plain; version=0.0.4",
+            )
+        return registry.render_json()
 
     return application

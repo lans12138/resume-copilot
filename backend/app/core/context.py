@@ -54,3 +54,51 @@ def request_context_scope(context: RequestContext) -> Iterator[None]:
         yield
     finally:
         reset_request_context(token)
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    """Run/operation diagnostic context for logs (§18.1). Not an authorization source."""
+
+    run_id: str | None = None
+    run_type: str | None = None
+    thread_id: str | None = None
+    attempt: int | None = None
+    node: str | None = None
+    operation_key: str | None = None
+    task_id: str | None = None
+    job_id: str | None = None
+    application_id: str | None = None
+    error_code: str | None = None
+    duration_ms: float | None = None
+
+
+_run_context: ContextVar[RunContext | None] = ContextVar(
+    "run_context",
+    default=None,
+)
+
+
+def get_run_context() -> RunContext | None:
+    """Return the current run/operation context when one is bound."""
+    return _run_context.get()
+
+
+def set_run_context(context: RunContext) -> Token[RunContext | None]:
+    """Bind run context and return the token required for reset."""
+    return _run_context.set(context)
+
+
+def reset_run_context(token: Token[RunContext | None]) -> None:
+    """Restore the previous run context."""
+    _run_context.reset(token)
+
+
+@contextmanager
+def run_context_scope(context: RunContext) -> Iterator[None]:
+    """Bind a run context for the duration of a synchronous operation or test."""
+    token = set_run_context(context)
+    try:
+        yield
+    finally:
+        reset_run_context(token)

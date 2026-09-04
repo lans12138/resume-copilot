@@ -18,6 +18,13 @@ from backend.app.core.context import (
     set_request_context,
 )
 from backend.app.core.errors import handle_unexpected_error
+from backend.app.core.metrics import (
+    http_auth_failures_total,
+    http_conflict_total,
+    http_request_duration_seconds,
+    http_requests_total,
+    normalize_route,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,3 +102,36 @@ class RequestContextMiddleware:
                 },
             )
             reset_request_context(token)
+
+
+class MetricsMiddleware:
+    """Record per-request counts, durations, auth failures and conflicts (IMP-029)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._application = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._application(scope, receive, send)
+            return
+
+        method = scope["method"]
+        route = normalize_route(scope["path"])
+        started_at = time.perf_counter()
+        status_code = 500
+
+        async def send_with_metrics(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        await self._application(scope, receive, send_with_metrics)
+
+        duration = time.perf_counter() - started_at
+        http_requests_total().inc(method=method, route=route, status=str(status_code))
+        http_request_duration_seconds().record(duration, route=route, method=method)
+        if status_code in (401, 403):
+            http_auth_failures_total().inc(method=method)
+        elif status_code == 409:
+            http_conflict_total().inc(method=method)

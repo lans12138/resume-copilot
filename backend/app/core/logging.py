@@ -6,10 +6,11 @@ import json
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
-from backend.app.core.context import get_request_context
+from backend.app.core.context import get_request_context, get_run_context
 from backend.app.core.settings import Settings
 
 REDACTED = "[REDACTED]"
@@ -67,6 +68,29 @@ def redact_value(value: Any, *, key: str | None = None) -> Any:
     return redact_value(str(value))
 
 
+_SCAN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("email", _EMAIL_PATTERN),
+    ("phone", _PHONE_PATTERN),
+    ("bearer_token", _BEARER_PATTERN),
+    ("api_key", _API_KEY_PATTERN),
+)
+
+
+def scan_for_leaks(text: object) -> list[str]:
+    """Report which sensitive markers remain in text, for CI log scanning (§18.3).
+
+    Returns the matched categories (e.g. ``["email", "api_key"]``). An empty list
+    means no known sensitive marker was detected, i.e. the log line is clean.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    found: list[str] = []
+    for category, pattern in _SCAN_PATTERNS:
+        if pattern.search(text):
+            found.append(category)
+    return found
+
+
 class JsonLogFormatter(logging.Formatter):
     """Render one bounded JSON object per log record."""
 
@@ -98,6 +122,16 @@ class JsonLogFormatter(logging.Formatter):
                         "client_ip": context.client_ip,
                         "user_agent": context.user_agent,
                     }.items()
+                    if value is not None
+                }
+            )
+
+        run_context = get_run_context()
+        if run_context is not None:
+            payload.update(
+                {
+                    key: value
+                    for key, value in asdict(run_context).items()
                     if value is not None
                 }
             )
