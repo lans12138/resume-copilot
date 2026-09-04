@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from uuid import UUID
 
+from backend.app.core.settings import Settings
+
 
 class ChannelName(StrEnum):
     """The three recall channels fused by RRF in IMP-015."""
@@ -94,3 +96,106 @@ class RecallBundle:
     structured: list[RecallHit] = field(default_factory=list)
     keyword: list[RecallHit] = field(default_factory=list)
     vector: list[RecallHit] = field(default_factory=list)
+
+
+class HardRuleOutcome(StrEnum):
+    """Verdict a single hard rule or the aggregated profile can take.
+
+    ``UNKNOWN`` is reserved for missing evidence and must never be guessed as
+    ``FAIL`` (detailed design §8.4). ``FAIL`` does not delete the candidate:
+    it still flows into evidence-scored evaluation downstream.
+    """
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNKNOWN = "UNKNOWN"
+
+
+class HardRuleId(StrEnum):
+    """The three hard rules consumed by IMP-015."""
+
+    YEARS_EXPERIENCE = "years_experience"
+    REQUIRED_EDUCATION = "required_education"
+    REQUIRED_SKILLS = "required_skills"
+
+
+@dataclass(frozen=True)
+class HardRuleResult:
+    """One rule's verdict over confirmed profile fields (§8.4)."""
+
+    rule_id: HardRuleId
+    result: HardRuleOutcome
+    reason_code: str
+    observed_value: object | None = None
+    required_value: object | None = None
+    evidence_chunk_ids: list[UUID] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class HardRuleBundle:
+    """All hard-rule verdicts for one candidate plus the aggregate outcome."""
+
+    rules: list[HardRuleResult]
+    overall: HardRuleOutcome
+
+
+@dataclass(frozen=True)
+class RetrievalConfig:
+    """Runtime retrieval knobs, frozen at run time into the ranking snapshot.
+
+    Constructed from ``Settings`` (``from_settings``) so the MatchRun snapshot
+    captures exactly the weights/RRF_K/Top-K that produced a given ranking.
+    """
+
+    structured_weight: float
+    keyword_weight: float
+    vector_weight: float
+    rrf_k: int
+    top_k: int
+    rule_version: str
+    channels: tuple[ChannelName, ...] = (
+        ChannelName.STRUCTURED,
+        ChannelName.KEYWORD,
+        ChannelName.VECTOR,
+    )
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> RetrievalConfig:
+        return cls(
+            structured_weight=settings.structured_weight,
+            keyword_weight=settings.keyword_weight,
+            vector_weight=settings.vector_weight,
+            rrf_k=settings.rrf_k,
+            top_k=settings.top_k,
+            rule_version=settings.rule_version,
+        )
+
+
+@dataclass(frozen=True)
+class FusedCandidate:
+    """One candidate after RRF fusion, before/independent of hard-rule fill."""
+
+    candidate_profile_id: UUID
+    snapshot_order: int  # 1-based stable order after fusion
+    rrf_score: float
+    structured_rank: int | None = None
+    structured_score: float | None = None
+    keyword_rank: int | None = None
+    keyword_score: float | None = None
+    vector_rank: int | None = None
+    vector_score: float | None = None
+    hard_rule: HardRuleBundle | None = None
+
+
+@dataclass(frozen=True)
+class RankingSnapshot:
+    """Frozen, reproducible ranking written to MatchRunCandidate in IMP-019.
+
+    Holds every channel rank/score, the config that produced it, and the stable
+    order. ``FAIL``/``UNKNOWN`` candidates are retained here — filtering is a
+    presentation concern owned by the candidate list UI, never by retrieval.
+    """
+
+    job_version_id: UUID
+    config: RetrievalConfig
+    fused: list[FusedCandidate]
