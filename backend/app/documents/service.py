@@ -14,6 +14,7 @@ from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
 from backend.app.documents.models import DocumentStatus, ResumeDocument
+from backend.app.documents.parse_service import ParseEnqueuer
 from backend.app.documents.schemas import (
     DocumentBatchAccepted,
     DocumentListResponse,
@@ -52,16 +53,23 @@ class DocumentUploadService:
         storage: StorageBackend,
         *,
         max_file_size_bytes: int,
+        parser_version: str,
+        enqueue: ParseEnqueuer | None = None,
     ) -> None:
         self.session = session
         self.storage = storage
         self.max_file_size_bytes = max_file_size_bytes
+        self.parser_version = parser_version
+        self.enqueue = enqueue
 
     async def upload_batch(
         self, actor: Actor, uploads: Sequence[UploadFile]
     ) -> DocumentBatchAccepted:
         self._require_hr(actor)
         items = [await self._upload_one(actor, upload) for upload in uploads]
+        for item in items:
+            if item.outcome is UploadOutcome.ACCEPTED and item.resource_id is not None:
+                await self._enqueue_parse(item.resource_id)
         return DocumentBatchAccepted(
             items=items,
             total=len(items),
@@ -69,6 +77,22 @@ class DocumentUploadService:
             duplicates=sum(item.outcome is UploadOutcome.DUPLICATE for item in items),
             rejected=sum(item.outcome is UploadOutcome.REJECTED for item in items),
         )
+
+    async def _enqueue_parse(self, document_id: UUID) -> None:
+        document = await self.session.get(ResumeDocument, document_id)
+        if document is None:
+            return
+        # §7.2 step 6: persist QUEUED, then deliver the parse task after commit.
+        document.status = DocumentStatus.QUEUED
+        document.attempt = 1
+        await self.session.commit()
+        if self.enqueue is None:
+            return
+        try:
+            self.enqueue.enqueue_parse(document.id, attempt=1, parser_version=self.parser_version)
+        except Exception:
+            document.status = DocumentStatus.UPLOADED
+            await self.session.commit()
 
     async def _upload_one(self, actor: Actor, upload: UploadFile) -> DocumentUploadResult:
         display_name = _display_filename(upload.filename)

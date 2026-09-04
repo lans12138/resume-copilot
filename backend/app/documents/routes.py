@@ -9,16 +9,24 @@ from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth.dependencies import get_current_actor
+from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
 from backend.app.core.settings import Settings
-from backend.app.documents.models import DocumentStatus
+from backend.app.documents.models import DocumentStatus, ResumeDocument
+from backend.app.documents.parse_service import (
+    CeleryParseEnqueuer,
+    DocumentParseService,
+    build_parser_registry,
+)
+from backend.app.documents.repository import SqlAlchemyDocumentRepository
 from backend.app.documents.schemas import (
     DocumentBatchAccepted,
     DocumentListResponse,
     DocumentResponse,
 )
-from backend.app.documents.service import DocumentUploadService
+from backend.app.documents.service import DocumentUploadService, document_response
+from backend.app.infrastructure.celery import app as celery_app
 from backend.app.infrastructure.runtime import RuntimeResources
 
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
@@ -31,6 +39,8 @@ def upload_service(request: Request, session: AsyncSession) -> DocumentUploadSer
         session,
         resources.storage,
         max_file_size_bytes=settings.max_file_size_mb * 1024 * 1024,
+        parser_version=settings.parser_version,
+        enqueue=CeleryParseEnqueuer(celery_app, "documents.parse"),
     )
 
 
@@ -81,3 +91,28 @@ async def get_document(
     resources: RuntimeResources = request.app.state.resources
     async with resources.session_factory() as session:
         return await upload_service(request, session).get_document(actor, document_id)
+
+
+@router.post("/{document_id}/retry", response_model=DocumentResponse, status_code=202)
+async def retry_document(
+    document_id: UUID,
+    request: Request,
+    actor: Annotated[Actor, Depends(get_current_actor)],
+) -> DocumentResponse:
+    if actor.role is not UserRole.HR:
+        raise AppError(code="FORBIDDEN", http_status=403, safe_message="当前用户无简历访问权限")
+    settings: Settings = request.app.state.settings
+    resources: RuntimeResources = request.app.state.resources
+    async with resources.session_factory() as session:
+        service = DocumentParseService(
+            documents=SqlAlchemyDocumentRepository(session),
+            storage=resources.storage,
+            parsers=build_parser_registry(parser_version=settings.parser_version),
+            enqueue=CeleryParseEnqueuer(celery_app, "documents.retry_parse"),
+            settings=settings,
+        )
+        await service.retry_parse(document_id)
+        document = await session.get(ResumeDocument, document_id)
+        if document is None:
+            raise AppError(code="DOCUMENT_NOT_FOUND", http_status=404, safe_message="文档不存在")
+        return document_response(document)
