@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState, type FormEvent } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, useNavigate, useParams } from "react-router-dom"
 import { api } from "../api/client"
 import type { JobInput, JobStatus } from "../api/types"
 import { ErrorNotice, LoadingState } from "../components/Feedback"
 import { JobForm } from "../components/JobForm"
+import { RunStatusBadge } from "../components/RunStatusBadge"
 import { useAppStore } from "../state/session"
 
 const statusText: Record<JobStatus, string> = { DRAFT: "草稿", ACTIVE: "招聘中", CLOSED: "已关闭" }
@@ -13,9 +14,13 @@ export function JobDetailPage() {
   const { jobId = "" } = useParams()
   const token = useAppStore((state) => state.accessToken)!
   const user = useAppStore((state) => state.currentUser)
+  const navigate = useNavigate()
   const [editing, setEditing] = useState(false)
   const [assigneeId, setAssigneeId] = useState("")
   const queryClient = useQueryClient()
+  const matchRuns = useQuery({ queryKey: ["match-runs", jobId], queryFn: () => api.listMatchRuns(token, jobId), enabled: Boolean(jobId) })
+  const applications = useQuery({ queryKey: ["job-applications", jobId], queryFn: () => api.listJobApplications(token, jobId), enabled: Boolean(jobId) })
+  const launch = useMutation({ mutationFn: () => api.createMatchRun(token, jobId, {}), onSuccess: (res) => navigate(`/match-runs/${res.run_id}`) })
   const jobQuery = useQuery({ queryKey: ["job", jobId], queryFn: () => api.getJob(token, jobId), enabled: Boolean(jobId) })
   const assignments = useQuery({ queryKey: ["job", jobId, "assignments"], queryFn: () => api.listAssignments(token, jobId), enabled: Boolean(jobId) })
   const refresh = async () => {
@@ -52,7 +57,28 @@ export function JobDetailPage() {
 
       <section className="panel"><div className="section-heading"><div><p className="eyebrow">Assignment table</p><h2>负责人分配</h2></div><span>{assignments.data?.total ?? 0} 条记录</span></div>{assignments.error ? <ErrorNotice error={assignments.error} /> : null}{user?.role === "HR" ? <form className="inline-form" onSubmit={submitAssignment}><label htmlFor="assignee-id">招聘主管用户 ID</label><div><input id="assignee-id" value={assigneeId} onChange={(event) => setAssigneeId(event.target.value)} required placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" /><button className="button button-primary" disabled={grant.isPending}>分配</button></div></form> : null}{grant.error ? <ErrorNotice error={grant.error} /> : null}{revoke.error ? <ErrorNotice error={revoke.error} /> : null}<div className="table-wrap"><table><thead><tr><th>用户</th><th>状态</th><th>分配时间</th>{user?.role === "HR" ? <th>操作</th> : null}</tr></thead><tbody>{assignments.data?.items.map((item) => <tr key={item.id}><td><code>{item.user_id}</code></td><td>{item.revoked_at ? "已撤销" : "有效"}</td><td>{new Date(item.assigned_at).toLocaleDateString("zh-CN")}</td>{user?.role === "HR" ? <td>{item.revoked_at ? "—" : <button className="text-button" type="button" onClick={() => revoke.mutate(item.user_id)}>撤销</button>}</td> : null}</tr>)}{assignments.data?.items.length === 0 ? <tr><td colSpan={4}>尚未分配招聘主管</td></tr> : null}</tbody></table></div></section>
 
-      <section className="panel applications-panel"><div className="section-heading"><div><p className="eyebrow">Application table</p><h2>候选人进展</h2></div><span>后续切片</span></div><div className="empty-state compact"><strong>岗位已准备好接收候选人</strong><span>候选人申请功能将在后续编码任务中接入。</span></div></section>
+      <section className="panel applications-panel"><div className="section-heading"><div><p className="eyebrow">Run table</p><h2>分析流程与申请</h2></div><span>IMP-026 闭环</span></div>
+        {user?.role === "HR" && job.status === "ACTIVE" ? <div className="button-row"><button className="button button-primary" type="button" disabled={launch.isPending} onClick={() => launch.mutate()}>启动批量分析</button></div> : null}
+        {launch.error ? <ErrorNotice error={launch.error} /> : null}
+
+        <h3>批量匹配分析</h3>
+        <div className="table-wrap">
+          <table><thead><tr><th>流程</th><th>状态</th><th>创建</th></tr></thead>
+          <tbody>
+            {(matchRuns.data?.runs ?? []).map((r) => <tr key={r.run_id}><td><Link className="text-button" to={`/match-runs/${r.run_id}`}>{r.run_id.slice(0, 8)}</Link></td><td><RunStatusBadge status={r.status} /></td><td>{new Date(r.created_at).toLocaleDateString("zh-CN")}</td></tr>)}
+            {(matchRuns.data?.runs ?? []).length === 0 ? <tr><td colSpan={3}>尚未运行分析</td></tr> : null}
+          </tbody></table>
+        </div>
+
+        <h3>单人申请流程</h3>
+        <div className="table-wrap">
+          <table><thead><tr><th>流程</th><th>状态</th><th>报告</th></tr></thead>
+          <tbody>
+            {(applications.data ?? []).map((a) => <tr key={a.run_id}><td><Link className="text-button" to={`/application-runs/${a.run_id}`}>{a.run_id.slice(0, 8)}</Link></td><td><RunStatusBadge status={a.status} /></td><td>{a.match_report_id ? <code>{a.match_report_id.slice(0, 8)}</code> : "—"}</td></tr>)}
+            {(applications.data?.length ?? 0) === 0 ? <tr><td colSpan={3}>暂无申请流程</td></tr> : null}
+          </tbody></table>
+        </div>
+      </section>
     </div>
   </section>
 }

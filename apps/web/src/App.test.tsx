@@ -54,6 +54,8 @@ describe("authentication and jobs flow", () => {
       if (url.endsWith(`/jobs/${job.id}/assignments`)) return jsonResponse({ items: [], page: 1, page_size: 20, total: 0 })
       if (url.endsWith(`/jobs/${job.id}`)) return jsonResponse(job)
       if (url.endsWith("/jobs") && init?.method === "POST") return jsonResponse(job, 201)
+      if (url.endsWith("/match-runs")) return jsonResponse({ runs: [] })
+      if (url.endsWith("/applications")) return jsonResponse([])
       if (url.includes("/jobs")) return jsonResponse({ items: [], page: 1, page_size: 20, total: 0 })
       throw new Error(`Unexpected request: ${url}`)
     }))

@@ -6,6 +6,10 @@ import { CandidatesPage } from "./pages/CandidatesPage"
 import { JobDetailPage } from "./pages/JobDetailPage"
 import { JobsPage } from "./pages/JobsPage"
 import { LoginPage } from "./pages/LoginPage"
+import { MatchRunPage } from "./pages/MatchRunPage"
+import { ApplicationRunPage } from "./pages/ApplicationRunPage"
+import { ApprovalPage } from "./pages/ApprovalPage"
+import { InterviewPage } from "./pages/InterviewPage"
 
 export const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1, staleTime: 15_000 } } })
 
@@ -41,6 +45,10 @@ export function AppRoutes() {
     <Route element={<AuthGuard />}><Route element={<WorkspaceLayout />}>
       <Route path="/jobs" element={<JobsPage />} />
       <Route path="/jobs/:jobId" element={<JobDetailPage />} />
+      <Route path="/match-runs/:runId" element={<MatchRunPage />} />
+      <Route path="/application-runs/:runId" element={<ApplicationRunPage />} />
+      <Route path="/approvals/:approvalId" element={<ApprovalPage />} />
+      <Route path="/interviews/:interviewId" element={<InterviewPage />} />
       <Route path="/candidates" element={<CandidatesPage />} />
     </Route></Route>
     <Route path="*" element={<Navigate to="/jobs" replace />} />

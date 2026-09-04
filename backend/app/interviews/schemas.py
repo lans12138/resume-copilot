@@ -13,7 +13,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Schema version written to ApplicationRun.question_schema_version (§4.5).
 QUESTION_SCHEMA_VERSION = "v1"
@@ -85,3 +85,58 @@ class CreateInterviewScheduleCommand(BaseModel):
     actor_id: UUID
     idempotency_key: str
     proposal: ScheduleProposal
+
+
+# --------------------------------------------------------------------------- #
+# IMP-026 read models for the Interview API (§12.5)
+# --------------------------------------------------------------------------- #
+class ScheduleProposalOut(BaseModel):
+    """The (mock) schedule proposal the backend created."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    application_id: UUID
+    duration_minutes: int
+    timezone: str
+    interviewer_label: str
+
+
+class InterviewDetail(BaseModel):
+    """A mock-scheduled interview created after the second approval."""
+
+    id: UUID
+    application_id: UUID
+    run_id: UUID
+    approval_id: UUID
+    external_schedule_id: str
+    status: str
+    created_at: datetime
+    proposal: ScheduleProposalOut | None = None
+
+    @classmethod
+    def from_interview(cls, interview: Any) -> InterviewDetail:
+        proposal = (
+            ScheduleProposalOut(**interview.schedule_json)
+            if interview.schedule_json is not None
+            else None
+        )
+        return cls(
+            id=interview.id,
+            application_id=interview.application_id,
+            run_id=interview.run_id,
+            approval_id=interview.approval_id,
+            external_schedule_id=interview.external_schedule_id,
+            status=interview.status.value,
+            created_at=interview.created_at,
+            proposal=proposal,
+        )
+
+
+class InterviewList(BaseModel):
+    """Interviews for a job."""
+
+    interviews: list[InterviewDetail]
+
+    @classmethod
+    def from_interviews(cls, interviews: list[Any]) -> InterviewList:
+        return cls(interviews=[InterviewDetail.from_interview(i) for i in interviews])

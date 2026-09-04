@@ -1,4 +1,28 @@
-import type { ApiErrorPayload, Assignment, AssignmentList, CandidateFilter, CandidateList, CurrentUser, Job, JobInput, JobList, JobStatus, TokenResponse } from "./types"
+import type {
+  ApiErrorPayload,
+  ApplicationRunDetail,
+  ApplicationRunSummary,
+  ApprovalDetail,
+  Assignment,
+  AssignmentList,
+  CandidateFilter,
+  CandidateList,
+  CreateMatchRunRequest,
+  CurrentUser,
+  DecisionRequest,
+  InterviewDetail,
+  InterviewList,
+  Job,
+  JobInput,
+  JobList,
+  JobStatus,
+  MatchRunAccepted,
+  MatchRunDetail,
+  MatchRunList,
+  ReportList,
+  RunAccepted,
+  TokenResponse,
+} from "./types"
 
 const API_BASE_PATH = import.meta.env.VITE_API_BASE_PATH ?? "/api/v1"
 
@@ -65,4 +89,41 @@ export const api = {
     const query = params.toString()
     return request<CandidateList>(`/jobs/${jobId}/candidates${query ? `?${query}` : ""}`, {}, token)
   },
+  // --- MatchRun (IMP-026) ---
+  createMatchRun: (token: string, jobId: string, body: CreateMatchRunRequest = {}) =>
+    request<MatchRunAccepted>(`/jobs/${jobId}/match-runs`, { method: "POST", body: JSON.stringify(body) }, token),
+  getMatchRun: (token: string, runId: string) =>
+    request<MatchRunDetail>(`/match-runs/${runId}`, {}, token),
+  listMatchRuns: (token: string, jobId: string) =>
+    request<MatchRunList>(`/jobs/${jobId}/match-runs`, {}, token),
+  retryMatchRun: (token: string, runId: string) =>
+    request<MatchRunAccepted>(`/match-runs/${runId}/retry`, { method: "POST" }, token),
+  cancelMatchRun: (token: string, runId: string) =>
+    request<MatchRunAccepted>(`/match-runs/${runId}/cancel`, { method: "POST" }, token),
+  // --- ApplicationRun (IMP-026) ---
+  getApplicationRun: (token: string, runId: string) =>
+    request<ApplicationRunDetail>(`/application-runs/${runId}`, {}, token),
+  retryApplicationRun: (token: string, runId: string) =>
+    request<RunAccepted>(`/application-runs/${runId}/retry`, { method: "POST" }, token),
+  cancelApplicationRun: (token: string, runId: string) =>
+    request<RunAccepted>(`/application-runs/${runId}/cancel`, { method: "POST" }, token),
+  listJobApplications: (token: string, jobId: string) =>
+    request<ApplicationRunSummary[]>(`/jobs/${jobId}/applications`, {}, token),
+  // --- Approval (IMP-026) ---
+  getApproval: (token: string, approvalId: string) =>
+    request<ApprovalDetail>(`/approvals/${approvalId}`, {}, token),
+  decideApproval: (token: string, approvalId: string, body: DecisionRequest, idempotencyKey: string) =>
+    request<ApprovalDetail>(
+      `/approvals/${approvalId}/decision`,
+      { method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": idempotencyKey } },
+      token,
+    ),
+  // --- Interview (IMP-026) ---
+  getInterview: (token: string, interviewId: string) =>
+    request<InterviewDetail>(`/interviews/${interviewId}`, {}, token),
+  listInterviews: (token: string, jobId: string) =>
+    request<InterviewList>(`/interviews?job_id=${jobId}`, {}, token),
+  // --- Reports (evidence, IMP-020) ---
+  getReports: (token: string, runId: string) =>
+    request<ReportList>(`/match-runs/${runId}/reports`, {}, token),
 }

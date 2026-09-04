@@ -35,6 +35,8 @@ class MatchRunRepository(Protocol):
 
     async def get_match_run(self, run_id: UUID) -> MatchRun | None: ...
 
+    async def list_by_job(self, job_id: UUID) -> list[MatchRun]: ...
+
 
 class MatchRunCandidateRepository(Protocol):
     """Persistence contract for per-candidate ranking snapshots."""
@@ -66,6 +68,10 @@ class InMemoryMatchRunRepository:
     async def get_match_run(self, run_id: UUID) -> MatchRun | None:
         async with self._lock:
             return self._runs.get(run_id)
+
+    async def list_by_job(self, job_id: UUID) -> list[MatchRun]:
+        async with self._lock:
+            return [m for m in self._runs.values() if m.job_id == job_id]
 
 
 class InMemoryMatchRunCandidateRepository:
@@ -123,6 +129,14 @@ class SqlMatchRunRepository:
 
     async def get_match_run(self, run_id: UUID) -> MatchRun | None:
         return await self._session.get(MatchRun, run_id)
+
+    async def list_by_job(self, job_id: UUID) -> list[MatchRun]:
+        result = await self._session.execute(
+            select(MatchRun)
+            .where(MatchRun.job_id == job_id)
+            .order_by(MatchRun.created_at.desc())
+        )
+        return list(result.scalars().all())
 
 
 class SqlMatchRunCandidateRepository:

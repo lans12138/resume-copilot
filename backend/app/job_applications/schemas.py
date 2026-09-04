@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
+
+from backend.app.approvals.schemas import ApprovalDetail
 
 
 class CreateRunRequest(BaseModel):
@@ -32,7 +35,7 @@ class ApplicationRunSummary(BaseModel):
 
 
 class ApplicationRunDetail(BaseModel):
-    """Single run view; the current PENDING Approval is added in IMP-022."""
+    """Single run view (IMP-026 adds question set, approval, interview)."""
 
     run_id: UUID
     application_id: UUID
@@ -40,3 +43,8 @@ class ApplicationRunDetail(BaseModel):
     attempt: int
     completion_reason: str | None = None
     match_report_id: UUID | None = None
+    question_set: dict[str, Any] | None = None
+    current_approval: ApprovalDetail | None = None
+    interview_external_id: str | None = None
+    interview_status: str | None = None
+    interview_id: UUID | None = None

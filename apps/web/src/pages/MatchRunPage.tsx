@@ -1,0 +1,77 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { Link, useParams } from "react-router-dom"
+import { api } from "../api/client"
+import type { RunStatus } from "../api/types"
+import { ErrorNotice, LoadingState } from "../components/Feedback"
+import { ClaimEvidencePanel } from "../components/ClaimEvidencePanel"
+import { RankingTable } from "../components/RankingTable"
+import { RunStatusBadge } from "../components/RunStatusBadge"
+import { RunTimeline } from "../components/RunTimeline"
+import { useAppStore } from "../state/session"
+
+export function MatchRunPage() {
+  const { runId = "" } = useParams()
+  const token = useAppStore((state) => state.accessToken)!
+  const queryClient = useQueryClient()
+  const runQuery = useQuery({
+    queryKey: ["match-run", runId],
+    queryFn: () => api.getMatchRun(token, runId),
+    enabled: Boolean(runId),
+  })
+  const reportsQuery = useQuery({
+    queryKey: ["match-run", runId, "reports"],
+    queryFn: () => api.getReports(token, runId),
+    enabled: Boolean(runId),
+  })
+  const retry = useMutation({ mutationFn: () => api.retryMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
+  const cancel = useMutation({ mutationFn: () => api.cancelMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
+
+  if (runQuery.isLoading) return <LoadingState label="正在读取分析流程" />
+  if (runQuery.error) return <section><Link className="back-link" to="/jobs">← 返回岗位列表</Link><ErrorNotice error={runQuery.error} /></section>
+  const run = runQuery.data
+  if (!run) return null
+  const status = run.status as RunStatus
+  const terminal = status === "COMPLETED" || status === "FAILED" || status === "CANCELLED"
+
+  return (
+    <section>
+      <Link className="back-link" to={`/jobs/${run.job_id}`}>← 返回岗位</Link>
+      <header className="page-heading">
+        <div>
+          <div className="detail-meta">
+            <RunStatusBadge status={status} />
+            <span>分析流程 <code>{run.run_id.slice(0, 8)}</code></span>
+          </div>
+          <h1>批量匹配分析</h1>
+          <p>岗位版本 v{run.job_version_id.slice(0, 8)} · 规则 {run.rule_version} · 创建于 {new Date(run.created_at).toLocaleString("zh-CN")}</p>
+        </div>
+        <div className="button-row">
+          {status === "FAILED" ? <button className="button button-ghost" type="button" disabled={retry.isPending} onClick={() => retry.mutate()}>重试</button> : null}
+          {!terminal ? <button className="button button-danger" type="button" disabled={cancel.isPending} onClick={() => cancel.mutate()}>取消</button> : null}
+        </div>
+      </header>
+      {retry.error ? <ErrorNotice error={retry.error} /> : null}
+      {cancel.error ? <ErrorNotice error={cancel.error} /> : null}
+
+      <div className="run-stack">
+        <RunTimeline runId={runId} runType="MATCH" onTerminal={() => queryClient.invalidateQueries({ queryKey: ["match-run", runId] })} />
+
+        <section className="panel" aria-label="候选人排名">
+          <div className="section-heading">
+            <div><p className="eyebrow">Ranking table</p><h2>候选人排名</h2></div>
+            <span>{run.candidates.length} 名</span>
+          </div>
+          <RankingTable candidates={run.candidates} />
+        </section>
+
+        <section className="panel" aria-label="证据化报告">
+          <div className="section-heading">
+            <div><p className="eyebrow">Claim & evidence</p><h2>结论与证据</h2></div>
+            {reportsQuery.isLoading ? <span>加载中…</span> : null}
+          </div>
+          {reportsQuery.error ? <ErrorNotice error={reportsQuery.error} /> : <ClaimEvidencePanel reports={reportsQuery.data ?? { reports: [] }} />}
+        </section>
+      </div>
+    </section>
+  )
+}

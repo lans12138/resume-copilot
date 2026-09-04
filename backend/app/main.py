@@ -19,8 +19,10 @@ from backend.app.core.middleware import RequestContextMiddleware
 from backend.app.core.settings import Settings, get_settings
 from backend.app.documents.routes import router as documents_router
 from backend.app.infrastructure.runtime import RuntimeResources
+from backend.app.interviews.routes import router as interviews_router
 from backend.app.job_applications.routes import router as application_runs_router
 from backend.app.jobs.routes import router as jobs_router
+from backend.app.match_run.routes import router as match_runs_router
 from backend.app.reports.routes import router as reports_router
 from backend.app.sse.routes import router as sse_router
 
@@ -63,6 +65,8 @@ def create_app(
     application.include_router(reports_router)
     application.include_router(application_runs_router)
     application.include_router(approvals_router)
+    application.include_router(match_runs_router)
+    application.include_router(interviews_router)
     application.include_router(sse_router)
 
     @application.get("/api/v1/health/live", tags=["health"])

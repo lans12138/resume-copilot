@@ -41,6 +41,8 @@ class JobApplicationRepository(Protocol):
 
     async def get_application(self, application_id: UUID) -> JobApplication | None: ...
 
+    async def list_by_job(self, job_id: UUID) -> list[JobApplication]: ...
+
     async def claim_active_run(self, application_id: UUID, run_id: UUID) -> None:
         """Atomically set the slot; raise APPLICATION_RUN_ALREADY_ACTIVE/409 if taken."""
         ...
@@ -79,6 +81,10 @@ class InMemoryJobApplicationRepository:
     async def get_application(self, application_id: UUID) -> JobApplication | None:
         async with self._lock:
             return self._apps.get(application_id)
+
+    async def list_by_job(self, job_id: UUID) -> list[JobApplication]:
+        async with self._lock:
+            return [a for a in self._apps.values() if a.job_id == job_id]
 
     async def claim_active_run(self, application_id: UUID, run_id: UUID) -> None:
         async with self._lock:
@@ -121,6 +127,12 @@ class SqlJobApplicationRepository:
 
     async def get_application(self, application_id: UUID) -> JobApplication | None:
         return await self._session.get(JobApplication, application_id)
+
+    async def list_by_job(self, job_id: UUID) -> list[JobApplication]:
+        result = await self._session.execute(
+            select(JobApplication).where(JobApplication.job_id == job_id)
+        )
+        return list(result.scalars().all())
 
     async def claim_active_run(self, application_id: UUID, run_id: UUID) -> None:
         result = await self._session.execute(
