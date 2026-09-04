@@ -23,11 +23,9 @@ from pydantic import ValidationError
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.candidates.models import Candidate, CandidateProfile, CandidateProfileStatus
-from backend.app.candidates.repository import CandidateRepository, CandidateProfileRepository
 from backend.app.candidates.schemas import (
     CandidateProfileDraft,
     ContactInfo,
-    EducationClaim,
     ExperienceClaim,
     SkillClaim,
     revalidate_draft,
@@ -37,8 +35,7 @@ from backend.app.core.errors import AppError
 from backend.app.documents.models import DocumentStatus, ResumeDocument
 from backend.app.documents.parsers import ParsedDocument
 from backend.app.documents.validation import PDF_MEDIA_TYPE
-from backend.app.infrastructure.model_gateway import FakeModelGateway, ModelGateway
-
+from backend.app.infrastructure.model_gateway import FakeModelGateway
 
 # --------------------------------------------------------------------------- #
 # Draft boundary validation (pure logic, no DB)                               #
@@ -149,7 +146,9 @@ def test_fake_gateway_extracts_skills_contact_education() -> None:
     parsed = ParsedDocument(media_type=PDF_MEDIA_TYPE, full_text=text, blocks=())
 
     async def scenario() -> CandidateProfileDraft:
-        return await FakeModelGateway().extract_profile(full_text=parsed.full_text, blocks=parsed.blocks)
+        return await FakeModelGateway().extract_profile(
+            full_text=parsed.full_text, blocks=parsed.blocks
+        )
 
     draft = asyncio.run(scenario())
     skill_names = {s.name for s in draft.skills}
@@ -209,6 +208,13 @@ class FakeProfileRepository:
             if profile.id == profile_id:
                 return profile
         return None
+
+    async def list_ready_versions(self, candidate_id: UUID) -> list[CandidateProfile]:
+        return [
+            p
+            for p in self.saved
+            if p.candidate_id == candidate_id and p.status == CandidateProfileStatus.READY
+        ]
 
 
 class BadGateway:
@@ -292,7 +298,7 @@ def test_service_extract_rejects_non_hr() -> None:
 
 def test_service_extract_wraps_invalid_model_output() -> None:
     service = ProfileExtractionService(
-        FakeCandidateRepository(), FakeProfileRepository(), BadGateway()  # type: ignore[arg-type]
+        FakeCandidateRepository(), FakeProfileRepository(), BadGateway()
     )
 
     async def scenario() -> None:
