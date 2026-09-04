@@ -21,7 +21,11 @@ from backend.app.retrieval.models import (
     ReadyProfileView,
     RetrievalConfig,
 )
-from backend.app.retrieval.preview import CandidateFilter, preview_ranking
+from backend.app.retrieval.preview import (
+    CandidateFilter,
+    CandidateRankingView,
+    preview_ranking,
+)
 from backend.app.retrieval.repository import InMemoryRetrievalRepository
 
 JOB_VERSION_ID = UUID("99999999-9999-4999-8999-999999999999")
@@ -79,7 +83,11 @@ def _repository() -> InMemoryRetrievalRepository:
     )
 
 
-def _preview(filters: CandidateFilter | None = None, *, channels: tuple[ChannelName, ...] | None = None) -> object:
+def _preview(
+    filters: CandidateFilter | None = None,
+    *,
+    channels: tuple[ChannelName, ...] | None = None,
+) -> CandidateRankingView:
     config = _config()
     if channels is not None:
         config = RetrievalConfig(
@@ -129,16 +137,21 @@ def test_channel_results_propagate() -> None:
 
 def test_hard_rule_verdicts() -> None:
     view = _preview()
-    by_id = {row.candidate_profile_id: row for row in view.rows}  # noqa: SLF001
-    assert by_id[A_ID].hard_rule is not None and by_id[A_ID].hard_rule.overall == HardRuleOutcome.PASS
-    assert by_id[B_ID].hard_rule is not None and by_id[B_ID].hard_rule.overall == HardRuleOutcome.FAIL
+    rows = {row.candidate_profile_id: row for row in view.rows}  # noqa: SLF001
+    a, b, c = rows[A_ID], rows[B_ID], rows[C_ID]
+    assert a.hard_rule is not None and a.hard_rule.overall == HardRuleOutcome.PASS
+    assert b.hard_rule is not None and b.hard_rule.overall == HardRuleOutcome.FAIL
     # C is missing years (job requires 3) while skills/education pass -> UNKNOWN.
-    assert by_id[C_ID].hard_rule is not None and by_id[C_ID].hard_rule.overall == HardRuleOutcome.UNKNOWN
+    assert c.hard_rule is not None and c.hard_rule.overall == HardRuleOutcome.UNKNOWN
 
 
 def test_explicit_filter_does_not_shrink_match_run_scope() -> None:
     full = _preview()
-    assert any(row.hard_rule is not None and row.hard_rule.overall == HardRuleOutcome.FAIL for row in full.rows)  # noqa: SLF001
+    has_fail = any(
+        row.hard_rule is not None and row.hard_rule.overall == HardRuleOutcome.FAIL
+        for row in full.rows
+    )
+    assert has_fail
 
     pass_only = _preview(CandidateFilter(hard_rule=HardRuleOutcome.PASS))
     # The filter narrows what is shown ...
@@ -168,7 +181,11 @@ def test_single_channel_isolation() -> None:
 
 
 def test_empty_corpus_yields_empty_ranking() -> None:
-    empty = InMemoryRetrievalRepository(profiles=[], chunk_vectors=[], job_queries={JOB_VERSION_ID: _job()})
+    empty = InMemoryRetrievalRepository(
+        profiles=[],
+        chunk_vectors=[],
+        job_queries={JOB_VERSION_ID: _job()},
+    )
     view = asyncio.run(
         preview_ranking(
             empty,
