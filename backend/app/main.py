@@ -18,6 +18,7 @@ from backend.app.core.middleware import RequestContextMiddleware
 from backend.app.core.settings import Settings, get_settings
 from backend.app.documents.routes import router as documents_router
 from backend.app.infrastructure.runtime import RuntimeResources
+from backend.app.job_applications.routes import router as application_runs_router
 from backend.app.jobs.routes import router as jobs_router
 from backend.app.reports.routes import router as reports_router
 
@@ -58,6 +59,7 @@ def create_app(
     application.include_router(documents_router)
     application.include_router(candidates_router)
     application.include_router(reports_router)
+    application.include_router(application_runs_router)
 
     @application.get("/api/v1/health/live", tags=["health"])
     def liveness() -> dict[str, str]:

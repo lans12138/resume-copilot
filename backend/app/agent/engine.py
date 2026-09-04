@@ -42,9 +42,17 @@ class GraphNode:
 class RunGraph:
     """Ordered nodes plus the node after which the engine must pause."""
 
-    def __init__(self, nodes: list[GraphNode], *, interrupt_after: str | None = None) -> None:
+    def __init__(
+        self,
+        nodes: list[GraphNode],
+        *,
+
+        interrupt_after: str | None = None,
+        interrupt_status: RunStatus = RunStatus.INTERRUPTED,
+    ) -> None:
         self.nodes = list(nodes)
         self.interrupt_after = interrupt_after
+        self.interrupt_status = interrupt_status
         self._validate()
 
     def _validate(self) -> None:
@@ -176,11 +184,11 @@ class RunEngine:
                     run_type=run.run_type,
                     event_type=AgentEventType.STATUS_CHANGED,
                     node=node.name,
-                    status=RunStatus.INTERRUPTED.value,
+                    status=graph.interrupt_status.value,
                     message_key="run.interrupted",
                     safe_payload={"checkpoint_id": checkpoint_id, "next_node": next_node},
                 )
-                await self._repository.set_status(run.id, RunStatus.INTERRUPTED)
+                await self._repository.set_status(run.id, graph.interrupt_status)
                 saved = CheckpointTuple(
                     thread_id=run.thread_id,
                     checkpoint_ns=self._ns,

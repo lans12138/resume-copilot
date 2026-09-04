@@ -39,12 +39,13 @@ class RunService:
         *,
         run_type: RunType,
         config_snapshot: dict[str, Any],
+        run_id: UUID | None = None,
         thread_id: str | None = None,
         attempt: int = 1,
     ) -> AgentRun:
         """Insert a CREATED run and its first event; returns the run."""
         run = AgentRun(
-            id=uuid4(),
+            id=run_id or uuid4(),
             thread_id=thread_id or uuid4().hex,
             run_type=run_type,
             status=RunStatus.CREATED,
@@ -94,3 +95,15 @@ class RunService:
             safe_payload={"reason": reason},
         )
         await self._repository.set_status(run.id, RunStatus.FAILED, finished=True)
+
+    async def cancel_run(self, run: AgentRun, *, reason: str) -> None:
+        await self._repository.append_event(
+            run_id=run.id,
+            run_type=run.run_type,
+            event_type=AgentEventType.RUN_CANCELLED,
+            node=None,
+            status=RunStatus.CANCELLED.value,
+            message_key="run.cancelled",
+            safe_payload={"reason": reason},
+        )
+        await self._repository.set_status(run.id, RunStatus.CANCELLED, finished=True)

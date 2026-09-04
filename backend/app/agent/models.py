@@ -44,10 +44,18 @@ class RunType(StrEnum):
 
 
 class RunStatus(StrEnum):
-    """Lifecycle state of a run, mirrored into AgentEvent.status for UI."""
+    """Lifecycle state of a run, mirrored into AgentEvent.status for UI.
+
+    ``WAITING_APPROVAL`` is the APPLICATION-run state entered when the graph
+    pauses at the ``human_review`` node (detailed design §4.5, §11.2). It is
+    semantically distinct from ``INTERRUPTED`` (which the generic engine used
+    before the ApplicationRun state machine was finalised) and is the value the
+    ApplicationRun graph requests via ``RunGraph.interrupt_status``.
+    """
 
     CREATED = "CREATED"
     RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     INTERRUPTED = "INTERRUPTED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -73,7 +81,8 @@ class AgentRun(Base):
     __tablename__ = "agent_runs"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('CREATED','RUNNING','INTERRUPTED','COMPLETED','FAILED','CANCELLED')",
+            "status IN ('CREATED','RUNNING','WAITING_APPROVAL','INTERRUPTED',"
+            "'COMPLETED','FAILED','CANCELLED')",
             name="ck_agent_runs_status",
         ),
         CheckConstraint("attempt >= 1", name="ck_agent_runs_attempt"),
