@@ -1,0 +1,207 @@
+"""Candidate profile draft schema produced by the model extraction gateway.
+
+The draft is the boundary contract between untrusted model output and the
+trusted domain. Pydantic validators reject malformed output (over-long fields,
+illegal enums, inverted date ranges, future dates) so the service layer can
+treat a successfully built ``CandidateProfileDraft`` as already normalized.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from enum import StrEnum
+from typing import Any, Self
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from backend.app.core.errors import AppError
+
+# Education levels are a closed, normalized enum. Anything else is treated as
+# model garbage and rejected at the draft boundary.
+EDUCATION_LEVELS: tuple[str, ...] = (
+    "OTHER",
+    "HIGH_SCHOOL",
+    "ASSOCIATE",
+    "BACHELOR",
+    "MASTER",
+    "PHD",
+)
+
+_MAX_NAME = 200
+_MAX_SKILL = 80
+_MAX_ITEM_TEXT = 5_000
+_MAX_BLOCKS = 100
+_MAX_UNKNOWN_KEYS = 50
+
+
+class CandidateProfileStatus(StrEnum):
+    DRAFT = "DRAFT"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    READY = "READY"
+    SUPERSEDED = "SUPERSEDED"
+
+
+class ContactInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=64)
+
+    @field_validator("email")
+    @classmethod
+    def email_has_at_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if "@" not in value or value.strip() != value or " " in value:
+            raise ValueError("email must contain a single @ and no surrounding whitespace")
+        return value.strip().lower()
+
+
+class SkillClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=_MAX_SKILL)
+    years: float | None = Field(default=None, ge=0, le=60)
+
+
+class _DateRangeItem(BaseModel):
+    """Shared date-range validation for experience and education claims."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date | None = None
+    end_date: date | None = None
+    current: bool = False
+    description: str | None = Field(default=None, max_length=_MAX_ITEM_TEXT)
+
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def parse_iso_date(cls, value: Any) -> date | None:
+        if value is None or isinstance(value, date):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                return date.fromisoformat(stripped)
+            except ValueError as error:
+                raise ValueError("date must be ISO format YYYY-MM-DD") from error
+        raise ValueError("date must be ISO format YYYY-MM-DD")
+
+    @model_validator(mode="after")
+    def check_date_order(self) -> Self:
+        # `current` means the role is ongoing; an end date is not yet known.
+        if (
+            self.end_date is not None
+            and not self.current
+            and self.start_date is not None
+            and self.end_date < self.start_date
+        ):
+            raise ValueError("end_date must not be earlier than start_date")
+        if self.end_date is not None and self.end_date > date.today():
+            raise ValueError("end_date must not be in the future")
+        return self
+
+
+class ExperienceClaim(_DateRangeItem):
+    company: str = Field(min_length=1, max_length=_MAX_NAME)
+    title: str = Field(min_length=1, max_length=_MAX_NAME)
+
+
+class EducationClaim(_DateRangeItem):
+    school: str = Field(min_length=1, max_length=_MAX_NAME)
+    degree: str | None = Field(default=None, max_length=_MAX_NAME)
+    major: str | None = Field(default=None, max_length=_MAX_NAME)
+
+
+class ProjectClaim(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=_MAX_NAME)
+    role: str | None = Field(default=None, max_length=_MAX_NAME)
+    description: str | None = Field(default=None, max_length=_MAX_ITEM_TEXT)
+    url: str | None = Field(default=None, max_length=2048)
+
+
+class CandidateProfileDraft(BaseModel):
+    """Structured candidate profile returned by the extraction gateway.
+
+    Every field is optional on purpose: the source document is untrusted, so a
+    missing value is acceptable and becomes a REVIEW_REQUIRED placeholder for a
+    human to complete. Unknown model output is captured explicitly in
+    ``unknown_fields`` instead of silently widening the schema.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: str | None = Field(default=None, max_length=_MAX_NAME)
+    contact: ContactInfo | None = None
+    skills: list[SkillClaim] = Field(default_factory=list, max_length=_MAX_BLOCKS)
+    experiences: list[ExperienceClaim] = Field(default_factory=list, max_length=_MAX_BLOCKS)
+    education: list[EducationClaim] = Field(default_factory=list, max_length=_MAX_BLOCKS)
+    projects: list[ProjectClaim] = Field(default_factory=list, max_length=_MAX_BLOCKS)
+    education_level: str | None = None
+    unknown_fields: dict[str, Any] = Field(default_factory=dict, max_length=_MAX_UNKNOWN_KEYS)
+
+    @field_validator("education_level")
+    @classmethod
+    def education_level_is_closed_enum(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if normalized not in EDUCATION_LEVELS:
+            raise ValueError(
+                "education_level must be one of: " + ", ".join(EDUCATION_LEVELS)
+            )
+        return normalized
+
+    @field_validator("unknown_fields")
+    @classmethod
+    def unknown_fields_not_too_deep(cls, value: dict[str, Any]) -> dict[str, Any]:
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError("unknown_fields keys must be non-empty strings")
+            # Keep the captured blob bounded and JSON-safe.
+            if len(repr(item)) > _MAX_ITEM_TEXT:
+                raise ValueError("unknown_fields values must be small")
+        return value
+
+
+class CandidateProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    candidate_id: UUID
+    document_id: UUID
+    version_no: int
+    status: CandidateProfileStatus
+    profile_json: dict[str, Any]
+    normalized_skills: list[str]
+    years_experience: float | None
+    education_level: str | None
+    schema_version: str
+    confirmed_by: UUID | None
+    confirmed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+
+
+def revalidate_draft(draft: CandidateProfileDraft) -> CandidateProfileDraft:
+    """Re-parse a draft as untrusted input at the service boundary.
+
+    The gateway may already validate, but the service must not trust it. A
+    raised ``ValidationError`` is translated into a stable ``AppError`` so the
+    caller can surface a bounded, non-internal failure.
+    """
+    try:
+        return CandidateProfileDraft.model_validate(draft.model_dump(mode="json"))
+    except Exception as error:  # pydantic ValidationError is the expected case
+        raise AppError(
+            code="PROFILE_DRAFT_INVALID",
+            http_status=422,
+            safe_message="模型抽取结果无法通过字段校验，需重新解析或由人工补全",
+            details={"reason": type(error).__name__},
+        ) from error
