@@ -66,7 +66,11 @@ function Invoke-Upload {
         $arguments += @('--form', "files=@$filePath;type=$MediaType")
     }
     $arguments += 'http://127.0.0.1:18008/api/v1/documents'
-    $output = @(& curl.exe @arguments)
+    # Resolve the curl binary portably: in Windows PowerShell `curl` is an alias for
+    # Invoke-WebRequest, so we must call the real executable `curl.exe`; on the Linux CI
+    # runner there is no `.exe` suffix and `curl` is the real binary.
+    $curlCmd = if ($IsWindows) { 'curl.exe' } else { 'curl' }
+    $output = @(& $curlCmd @arguments)
     if ($LASTEXITCODE -ne 0 -or $output.Count -lt 2) {
         throw "Upload request failed: $($output -join "`n")"
     }
