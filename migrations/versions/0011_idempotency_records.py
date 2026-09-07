@@ -55,11 +55,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_idempotency_records"),
         sa.UniqueConstraint("key", name="uq_idempotency_records_key"),
     )
-    op.create_index(
-        "ix_idempotency_records_key", "idempotency_records", ["key"], unique=True
-    )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_idempotency_records_key", table_name="idempotency_records")
     op.drop_table("idempotency_records")

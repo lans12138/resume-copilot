@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Integer,
     String,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -45,10 +46,14 @@ class IdempotencyRecord(Base):
     """One client request outcome, keyed by ``Idempotency-Key``."""
 
     __tablename__ = "idempotency_records"
+    # Single named uniqueness enforcer on the client key.  The unique constraint
+    # also backs a unique index in Postgres, so the key is both unique and
+    # indexed for lookups.  Keep this name in sync with migration 0011.
+    __table_args__ = (UniqueConstraint("key", name="uq_idempotency_records_key"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    # Client-supplied key; the unique index is the concurrency backstop.
-    key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    # Client-supplied key; the unique constraint is the concurrency backstop.
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
     # Stable per-endpoint label derived from the route path.
     operation: Mapped[str] = mapped_column(String(255), nullable=False)
     actor_id: Mapped[UUID | None] = mapped_column(nullable=True)
