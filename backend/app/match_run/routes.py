@@ -21,6 +21,7 @@ from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
 from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.errors import app_error
+from backend.app.idempotency.dependency import IdempotencyGuardDep
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
 from backend.app.match_run.applications import SqlApplicationsProvider
@@ -168,7 +169,9 @@ async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Matc
 
 
 @router.post("/match-runs/{run_id}/retry", response_model=MatchRunAccepted)
-async def retry_match_run(run_id: UUID, actor: ActorDep, request: Request) -> MatchRunAccepted:
+async def retry_match_run(
+    run_id: UUID, actor: ActorDep, request: Request, guard: IdempotencyGuardDep
+) -> MatchRunAccepted:
     resources: RuntimeResources = request.app.state.resources
     async with resources.session_factory() as session:
         agent_repo = SqlAgentRunRepository(session)
@@ -194,13 +197,17 @@ async def retry_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Ma
             evidence_provider=SqlEvidenceChunkRepository(session),
         )
         await session.commit()
-        return MatchRunAccepted(
+        result = MatchRunAccepted(
             run_id=agent_run.id, job_id=match_run.job_id, status=agent_run.status.value
         )
+        await guard.complete(202, result.model_dump(mode="json"), resource_id=str(run_id))
+        return result
 
 
 @router.post("/match-runs/{run_id}/cancel", response_model=MatchRunAccepted)
-async def cancel_match_run(run_id: UUID, actor: ActorDep, request: Request) -> MatchRunAccepted:
+async def cancel_match_run(
+    run_id: UUID, actor: ActorDep, request: Request, guard: IdempotencyGuardDep
+) -> MatchRunAccepted:
     resources: RuntimeResources = request.app.state.resources
     async with resources.session_factory() as session:
         agent_repo = SqlAgentRunRepository(session)
@@ -215,7 +222,9 @@ async def cancel_match_run(run_id: UUID, actor: ActorDep, request: Request) -> M
         match_run = await SqlMatchRunRepository(session).get_match_run(run_id)
         job_id = match_run.job_id if match_run is not None else run_id
         await session.commit()
-        return MatchRunAccepted(run_id=agent_run.id, job_id=job_id, status=agent_run.status.value)
+        result = MatchRunAccepted(run_id=agent_run.id, job_id=job_id, status=agent_run.status.value)
+        await guard.complete(202, result.model_dump(mode="json"), resource_id=str(run_id))
+        return result
 
 
 async def _authorize_from_run(actor: Actor, agent_run: Any, session: Any) -> None:

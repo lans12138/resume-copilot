@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from pydantic import JsonValue
+from starlette.responses import JSONResponse
 
 from backend.app.approvals.routes import router as approvals_router
 from backend.app.auth.routes import router as auth_router
@@ -19,6 +20,7 @@ from backend.app.core.metrics import get_registry
 from backend.app.core.middleware import MetricsMiddleware, RequestContextMiddleware
 from backend.app.core.settings import Settings, get_settings
 from backend.app.documents.routes import router as documents_router
+from backend.app.idempotency.errors import IdempotencyReplay
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.interviews.routes import router as interviews_router
 from backend.app.job_applications.routes import router as application_runs_router
@@ -26,6 +28,15 @@ from backend.app.jobs.routes import router as jobs_router
 from backend.app.match_run.routes import router as match_runs_router
 from backend.app.reports.routes import router as reports_router
 from backend.app.sse.routes import router as sse_router
+
+
+async def _handle_idempotency_replay(request: Request, exc: IdempotencyReplay) -> JSONResponse:
+    """Replay a previously stored successful response verbatim (FIN-001)."""
+    return JSONResponse(
+        status_code=exc.status,
+        content=exc.body,
+        headers={"Idempotency-Replayed": "true"},
+    )
 
 
 def create_app(
@@ -60,6 +71,7 @@ def create_app(
     )
     application.add_middleware(MetricsMiddleware)
     register_exception_handlers(application)
+    application.add_exception_handler(IdempotencyReplay, _handle_idempotency_replay)
     application.include_router(auth_router)
     application.include_router(jobs_router)
     application.include_router(documents_router)

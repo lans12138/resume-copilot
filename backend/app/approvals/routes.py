@@ -12,11 +12,12 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Request
 
 from backend.app.approvals.schemas import ApprovalDetail, DecisionRequest
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.idempotency.dependency import IdempotencyGuardDep
 from backend.app.job_applications.service import ApplicationRunService
 from backend.app.job_applications.wiring import application_run_service
 
@@ -45,15 +46,20 @@ async def decide_approval(
     body: DecisionRequest,
     actor: ActorDep,
     service: ServiceDep,
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    request: Request,
+    guard: IdempotencyGuardDep,
 ) -> ApprovalDetail:
+    # The ``Idempotency-Key`` header is enforced at the request level here (FIN-001):
+    # an identical retried request replays the first response; a different request
+    # under the same key is rejected with 409 IDEMPOTENCY_KEY_REUSED.
     await service.decide_approval(
         actor,
         approval_id,
         body.decision,
         expected_version=body.expected_version,
         edited_params=body.edited_params,
-        idempotency_key=idempotency_key,
     )
     approval = await service.get_approval_for_actor(actor, approval_id)
-    return ApprovalDetail.from_approval(approval)
+    detail = ApprovalDetail.from_approval(approval)
+    await guard.complete(200, detail.model_dump(mode="json"), resource_id=str(approval.id))
+    return detail

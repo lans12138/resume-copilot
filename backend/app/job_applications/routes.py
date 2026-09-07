@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, Request
 from backend.app.approvals.schemas import ApprovalDetail
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.idempotency.dependency import IdempotencyGuardDep
 from backend.app.interviews.repository import SqlInterviewRepository
 from backend.app.job_applications.repository import (
     SqlJobApplicationRepository,
@@ -122,13 +123,16 @@ async def retry_application_run(
     run_id: UUID,
     actor: ActorDep,
     service: ServiceDep,
+    guard: IdempotencyGuardDep,
 ) -> RunAccepted:
     agent_run, application_run = await service.retry_application_run(actor, run_id)
-    return RunAccepted(
+    result = RunAccepted(
         run_id=agent_run.id,
         application_id=application_run.application_id,
         status=agent_run.status.value,
     )
+    await guard.complete(202, result.model_dump(mode="json"), resource_id=str(run_id))
+    return result
 
 
 @router.post("/application-runs/{run_id}/cancel", response_model=RunAccepted)
@@ -136,13 +140,16 @@ async def cancel_application_run(
     run_id: UUID,
     actor: ActorDep,
     service: ServiceDep,
+    guard: IdempotencyGuardDep,
 ) -> RunAccepted:
     agent_run, application_run = await service.cancel_application_run(actor, run_id)
-    return RunAccepted(
+    result = RunAccepted(
         run_id=agent_run.id,
         application_id=application_run.application_id,
         status=agent_run.status.value,
     )
+    await guard.complete(202, result.model_dump(mode="json"), resource_id=str(run_id))
+    return result
 
 
 @router.get("/jobs/{job_id}/applications", response_model=list[ApplicationRunSummary])

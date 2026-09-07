@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Link, useParams } from "react-router-dom"
 import { ApiError, api } from "../api/client"
 import type { DecisionAction } from "../api/types"
@@ -18,6 +18,10 @@ export function ApprovalPage() {
   const [editedParams, setEditedParams] = useState<Record<string, unknown> | null>(null)
   const [stale, setStale] = useState(false)
   const [done, setDone] = useState<{ status: string } | null>(null)
+  // Stable Idempotency-Key for the current logical submit. Generated once per user
+  // click (not per render / per network retry) so a retried request replays the
+  // first response instead of being treated as a new action (FIN-001 §20.3).
+  const idempotencyKeyRef = useRef<string>("")
 
   const approvalQuery = useQuery({
     queryKey: ["approval", approvalId],
@@ -35,7 +39,7 @@ export function ApprovalPage() {
           expected_version: approvalQuery.data!.version,
           edited_params: input.edited_params ?? null,
         },
-        crypto.randomUUID(),
+        idempotencyKeyRef.current || crypto.randomUUID(),
       ),
     onSuccess: (result) => {
       setDone({ status: result.status })
@@ -67,10 +71,12 @@ export function ApprovalPage() {
 
   function onApprove() {
     setStale(false)
+    idempotencyKeyRef.current = crypto.randomUUID()
     decide.mutate({ decision: decidedAction, edited_params: editedParams })
   }
   function onReject() {
     setStale(false)
+    idempotencyKeyRef.current = crypto.randomUUID()
     decide.mutate({ decision: "REJECT" })
   }
 
