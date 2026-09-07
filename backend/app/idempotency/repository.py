@@ -196,12 +196,15 @@ class SqlIdempotencyRepository:
                     request_hash=request_hash,
                     locked_at=func.now(),
                 )
+                .returning(IdempotencyRecord.id)
             )
             result = await session.execute(stmt)
             # RETURNING + fetchone() (synchronous on the executed Result) reports whether
-            # the stale-lock row was actually re-claimed. If another process already
-            # took it over, no row matches the WHERE and fetchone() returns None, so we
-            # report "not taken" and re-read on the next loop iteration (FIN-001 #4).
+            # the stale-lock row was actually re-claimed. Without RETURNING an UPDATE yields
+            # zero result rows and fetchone() is always None, which would make every takeover
+            # report failure and break the API-restart recovery path (FIN-001 #4). If another
+            # process already took it over, no row matches the WHERE and fetchone() returns
+            # None, so we report "not taken" and re-read on the next loop iteration.
             taken = result.fetchone() is not None
             await session.commit()
             return taken
