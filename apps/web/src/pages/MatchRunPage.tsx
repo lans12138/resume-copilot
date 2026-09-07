@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Link, useParams } from "react-router-dom"
-import { api } from "../api/client"
+import { Link, useNavigate, useParams } from "react-router-dom"
+import { api, ApiError } from "../api/client"
 import type { RunStatus } from "../api/types"
 import { ErrorNotice, LoadingState } from "../components/Feedback"
 import { ClaimEvidencePanel } from "../components/ClaimEvidencePanel"
@@ -12,6 +12,7 @@ import { useAppStore } from "../state/session"
 export function MatchRunPage() {
   const { runId = "" } = useParams()
   const token = useAppStore((state) => state.accessToken)!
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const runQuery = useQuery({
     queryKey: ["match-run", runId],
@@ -25,6 +26,20 @@ export function MatchRunPage() {
   })
   const retry = useMutation({ mutationFn: () => api.retryMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
   const cancel = useMutation({ mutationFn: () => api.cancelMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
+  const startApplication = useMutation({
+    mutationFn: (applicationId: string) => api.createApplicationRun(
+      token,
+      applicationId,
+      reportsQuery.data?.reports.find((report) => report.application_id === applicationId)?.id,
+    ),
+    onSuccess: (created) => navigate(`/application-runs/${created.run_id}`),
+    onError: (error) => {
+      if (error instanceof ApiError && error.code === "APPLICATION_RUN_ALREADY_ACTIVE") {
+        const currentRunId = error.details.current_run_id
+        if (typeof currentRunId === "string") navigate(`/application-runs/${currentRunId}`)
+      }
+    },
+  })
 
   if (runQuery.isLoading) return <LoadingState label="正在读取分析流程" />
   if (runQuery.error) return <section><Link className="back-link" to="/jobs">← 返回岗位列表</Link><ErrorNotice error={runQuery.error} /></section>
@@ -52,6 +67,10 @@ export function MatchRunPage() {
       </header>
       {retry.error ? <ErrorNotice error={retry.error} /> : null}
       {cancel.error ? <ErrorNotice error={cancel.error} /> : null}
+      {startApplication.error && !(
+        startApplication.error instanceof ApiError &&
+        startApplication.error.code === "APPLICATION_RUN_ALREADY_ACTIVE"
+      ) ? <ErrorNotice error={startApplication.error} /> : null}
 
       <div className="run-stack">
         <RunTimeline runId={runId} runType="MATCH" onTerminal={() => queryClient.invalidateQueries({ queryKey: ["match-run", runId] })} />
@@ -61,7 +80,11 @@ export function MatchRunPage() {
             <div><p className="eyebrow">Ranking table</p><h2>候选人排名</h2></div>
             <span>{run.candidates.length} 名</span>
           </div>
-          <RankingTable candidates={run.candidates} />
+          <RankingTable
+            candidates={run.candidates}
+            onStartApplication={(applicationId) => startApplication.mutate(applicationId)}
+            startingApplicationId={startApplication.isPending ? startApplication.variables : undefined}
+          />
         </section>
 
         <section className="panel" aria-label="证据化报告">

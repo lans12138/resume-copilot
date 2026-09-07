@@ -13,6 +13,7 @@ param(
         'compose-test',
         'job-test',
         'document-upload-test',
+        'application-entry-test',
         'parser-test',
         'migration-test',
         'seed',
@@ -151,6 +152,9 @@ try {
         'document-upload-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')
         }
+        'application-entry-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
+        }
         'parser-test' {
             Build-BackendDevelopmentImage
             Invoke-BackendTool @('pytest', '-q', 'tests/unit/test_parsers.py')
@@ -203,6 +207,7 @@ try {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_migrations.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_auth.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
             Build-BackendDevelopmentImage
             Invoke-BackendTool @('ruff', 'check', 'backend', 'apps', 'tests/unit')
             Invoke-BackendTool @('mypy', 'backend', 'apps', 'tests/unit')

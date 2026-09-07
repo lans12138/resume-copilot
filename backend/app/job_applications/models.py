@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -81,7 +82,14 @@ class JobApplication(Base):
     job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id"), nullable=False)
     candidate_id: Mapped[UUID] = mapped_column(ForeignKey("candidates.id"), nullable=False)
     status: Mapped[ApplicationStatus] = mapped_column(
-        String(32), default=ApplicationStatus.CREATED, nullable=False
+        Enum(
+            ApplicationStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        default=ApplicationStatus.CREATED,
+        nullable=False,
     )
     # Exclusive slot; null when no ApplicationRun is active.
     active_application_run_id: Mapped[UUID | None] = mapped_column(nullable=True)

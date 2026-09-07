@@ -120,7 +120,7 @@ try {
             '-v', 'ON_ERROR_STOP=1', '-tAc', 'SELECT version_num FROM alembic_version;'
         ) | Select-Object -Last 1
     ).Trim()
-    if ($revision -ne '0008_create_workflow_tables') {
+    if ($revision -ne '0009_link_applications') {
         throw "Unexpected Alembic revision: $revision"
     }
 
@@ -159,6 +159,18 @@ WHERE to_regclass('public.' || name) IS NULL;
     ).Trim()
     if ($missingTableCount -ne '0') {
         throw "Migration left $missingTableCount expected ORM tables missing."
+    }
+
+    $applicationLinkConstraint = (
+        Invoke-Compose -Arguments @(
+            'exec', '--no-TTY', 'postgres',
+            'psql', '-U', 'resume_app', '-d', 'resume_copilot',
+            '-v', 'ON_ERROR_STOP=1', '-tAc',
+            "SELECT count(*) FROM pg_constraint WHERE conname = 'fk_match_run_candidates_application' AND contype = 'f';"
+        ) | Select-Object -Last 1
+    ).Trim()
+    if ($applicationLinkConstraint -ne '1') {
+        throw 'MatchRun candidates are not constrained to real JobApplications.'
     }
 
     $vectorDimension = (
@@ -207,7 +219,7 @@ WHERE to_regclass('public.' || name) IS NULL;
 
     Write-Output (
         'MIGRATION_VALIDATION_OK ' +
-        "revision=$revision tables=20 vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
+        "revision=$revision tables=20 application_fk=present vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
     )
 }
 finally {

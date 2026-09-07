@@ -22,6 +22,7 @@ from backend.app.auth.tokens import Actor
 from backend.app.core.errors import app_error
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
+from backend.app.match_run.applications import SqlApplicationsProvider
 from backend.app.match_run.rankings import SqlRankingsProvider
 from backend.app.match_run.repository import (
     SqlMatchRunCandidateRepository,
@@ -49,6 +50,11 @@ def _build(session: Any, resources: RuntimeResources, settings: Any) -> MatchRun
         match_run_repository=SqlMatchRunRepository(session),
         candidate_repository=SqlMatchRunCandidateRepository(session),
         rankings=rankings,
+        applications=SqlApplicationsProvider(session),
+        # AsyncSession cannot be flushed concurrently. The service keeps its
+        # bounded fan-out seam for worker-scoped repositories, while this
+        # request-scoped transaction processes candidates one at a time.
+        concurrency=1,
     )
 
 
@@ -79,9 +85,9 @@ async def create_match_run(
             model_config=payload.model_config_override or {},
             prompt_version=payload.prompt_version,
             rule_version=payload.rule_version,
-            application_ids={},
         )
-        await service.execute_match_run(run=run, match_run=match_run, application_ids={})
+        await service.execute_match_run(run=run, match_run=match_run)
+        await session.commit()
         return MatchRunAccepted(run_id=run.id, job_id=job.id, status=run.status.value)
 
 
@@ -173,7 +179,8 @@ async def retry_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Ma
         if match_run is None:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         service = _build(session, resources, request.app.state.settings)
-        await service.execute_match_run(run=agent_run, match_run=match_run, application_ids={})
+        await service.execute_match_run(run=agent_run, match_run=match_run)
+        await session.commit()
         return MatchRunAccepted(
             run_id=agent_run.id, job_id=match_run.job_id, status=agent_run.status.value
         )
@@ -194,6 +201,7 @@ async def cancel_match_run(run_id: UUID, actor: ActorDep, request: Request) -> M
         await run_service.cancel_run(agent_run, reason="user_cancel")
         match_run = await SqlMatchRunRepository(session).get_match_run(run_id)
         job_id = match_run.job_id if match_run is not None else run_id
+        await session.commit()
         return MatchRunAccepted(run_id=agent_run.id, job_id=job_id, status=agent_run.status.value)
 
 

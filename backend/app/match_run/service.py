@@ -32,7 +32,7 @@ Two invariants the gate checks:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Set
+from collections.abc import Mapping, Sequence, Set
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -59,6 +59,14 @@ class RankingsProvider(Protocol):
     async def get_snapshot(self, *, job_version_id: UUID) -> RankingSnapshot: ...
 
 
+class ApplicationsProvider(Protocol):
+    """Creates or reuses JobApplications for ranked candidate profiles."""
+
+    async def get_or_create(
+        self, *, job_id: UUID, profile_ids: Sequence[UUID]
+    ) -> Mapping[UUID, UUID]: ...
+
+
 class MatchRunService:
     """Create and execute job-level MatchRun analyses."""
 
@@ -68,6 +76,7 @@ class MatchRunService:
         match_run_repository: MatchRunRepository,
         candidate_repository: MatchRunCandidateRepository,
         rankings: RankingsProvider,
+        applications: ApplicationsProvider | None = None,
         *,
         concurrency: int = 4,
     ) -> None:
@@ -75,6 +84,7 @@ class MatchRunService:
         self._match_runs = match_run_repository
         self._candidates = candidate_repository
         self._rankings = rankings
+        self._applications = applications
         self._concurrency = max(1, concurrency)
 
     async def create_match_run(
@@ -87,7 +97,6 @@ class MatchRunService:
         model_config: dict[str, object],
         prompt_version: str,
         rule_version: str,
-        application_ids: Mapping[UUID, UUID],
     ) -> tuple[AgentRun, MatchRun]:
         """Insert the CREATED run + MatchRun header and its first event."""
         run = AgentRun(
@@ -133,7 +142,7 @@ class MatchRunService:
         *,
         run: AgentRun,
         match_run: MatchRun,
-        application_ids: Mapping[UUID, UUID],
+        application_ids: Mapping[UUID, UUID] | None = None,
         fail_profiles: Set[UUID] | None = None,
         report_service: ReportService | None = None,
         evidence_provider: EvidenceProvider | None = None,
@@ -149,12 +158,31 @@ class MatchRunService:
         await self._node(run, "parse_job", {"job_version_id": str(match_run.job_version_id)})
         snapshot = await self._retrieve_candidates(run, match_run)
 
-        await self._node(run, "snapshot_candidates", {"count": len(snapshot.fused)})
-        await self._snapshot_candidates(run, match_run, snapshot, application_ids)
+        resolved_application_ids = dict(application_ids or {})
+        if self._applications is not None:
+            resolved_application_ids.update(
+                await self._applications.get_or_create(
+                    job_id=match_run.job_id,
+                    profile_ids=[item.candidate_profile_id for item in snapshot.fused],
+                )
+            )
+        missing_application_ids = {
+            item.candidate_profile_id for item in snapshot.fused
+        } - resolved_application_ids.keys()
+        if missing_application_ids:
+            raise RuntimeError(
+                "ranking snapshot has no JobApplication for profiles: "
+                + ", ".join(
+                    sorted(str(profile_id) for profile_id in missing_application_ids)
+                )
+            )
 
-        failed_ids = await self._fan_out(
-            run, match_run, snapshot, application_ids, faults
+        await self._node(run, "snapshot_candidates", {"count": len(snapshot.fused)})
+        await self._snapshot_candidates(
+            run, match_run, snapshot, resolved_application_ids
         )
+
+        failed_ids = await self._fan_out(run, match_run, snapshot, faults)
 
         status = await self._aggregate(run, snapshot, failed_ids)
         # Gate G4: a successful MatchRun persists evidence-backed reports for its
@@ -209,9 +237,7 @@ class MatchRunService:
                 MatchRunCandidate(
                     run_id=match_run.run_id,
                     candidate_profile_id=fused.candidate_profile_id,
-                    application_id=application_ids.get(
-                        fused.candidate_profile_id, fused.candidate_profile_id
-                    ),
+                    application_id=application_ids[fused.candidate_profile_id],
                     snapshot_order=fused.snapshot_order,
                     structured_rank=fused.structured_rank,
                     keyword_rank=fused.keyword_rank,
@@ -230,7 +256,6 @@ class MatchRunService:
         run: AgentRun,
         match_run: MatchRun,
         snapshot: RankingSnapshot,
-        application_ids: Mapping[UUID, UUID],
         faults: Set[UUID],
     ) -> list[UUID]:
         failed_ids: list[UUID] = []

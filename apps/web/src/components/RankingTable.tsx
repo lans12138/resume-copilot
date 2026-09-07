@@ -8,7 +8,15 @@ const processingLabel: Record<MatchRunCandidate["processing_status"], string> = 
 }
 
 /** Ranking of recalled candidates for a MatchRun (detailed design §15.4). */
-export function RankingTable({ candidates }: { candidates: MatchRunCandidate[] }) {
+export function RankingTable({
+  candidates,
+  onStartApplication,
+  startingApplicationId,
+}: {
+  candidates: MatchRunCandidate[]
+  onStartApplication?: (applicationId: string) => void
+  startingApplicationId?: string
+}) {
   if (candidates.length === 0) {
     return <p className="muted">本次分析没有命中候选人（Top-K 为空）。</p>
   }
@@ -22,6 +30,7 @@ export function RankingTable({ candidates }: { candidates: MatchRunCandidate[] }
             <th>RRF 分数</th>
             <th>处理状态</th>
             <th>硬规则</th>
+            {onStartApplication ? <th>操作</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -38,6 +47,21 @@ export function RankingTable({ candidates }: { candidates: MatchRunCandidate[] }
                   <HardRuleBadge outcome={c.hard_rule_overall as "PASS" | "FAIL" | "UNKNOWN"} />
                 )}
               </td>
+              {onStartApplication ? (
+                <td>
+                  <button
+                    className="button button-ghost button-small"
+                    type="button"
+                    disabled={
+                      c.processing_status !== "COMPLETED" ||
+                      startingApplicationId !== undefined
+                    }
+                    onClick={() => onStartApplication(c.application_id)}
+                  >
+                    {startingApplicationId === c.application_id ? "启动中…" : "启动单人流程"}
+                  </button>
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>

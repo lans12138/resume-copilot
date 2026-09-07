@@ -89,18 +89,25 @@ async def application_run_service(request: Request) -> AsyncGenerator[Applicatio
             interview_repo=interview_repo,
             schedule_backend=schedule_backend,
         )
-        yield ApplicationRunService(
-            app_repo=app_repo,
-            arun_repo=arun_repo,
-            run_service=run_service,
-            authorize=authorize,
-            approval_service=approval_service,
-            report_lookup=report_lookup,
-            side_effects=side_effects,
-        )
+        try:
+            yield ApplicationRunService(
+                app_repo=app_repo,
+                arun_repo=arun_repo,
+                run_service=run_service,
+                authorize=authorize,
+                approval_service=approval_service,
+                report_lookup=report_lookup,
+                side_effects=side_effects,
+            )
+            await session.commit()
+        except BaseException:
+            await session.rollback()
+            raise
 
 
-ServiceDep = Annotated[ApplicationRunService, Depends(application_run_service)]
+ServiceDep = Annotated[
+    ApplicationRunService, Depends(application_run_service, scope="function")
+]
 ActorDep = Annotated[Actor, Depends(get_current_actor)]
 
 

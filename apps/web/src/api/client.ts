@@ -101,6 +101,15 @@ export const api = {
   cancelMatchRun: (token: string, runId: string) =>
     request<MatchRunAccepted>(`/match-runs/${runId}/cancel`, { method: "POST" }, token),
   // --- ApplicationRun (IMP-026) ---
+  createApplicationRun: (token: string, applicationId: string, matchReportId?: string) =>
+    request<RunAccepted>(
+      `/applications/${applicationId}/runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({ match_report_id: matchReportId ?? null }),
+      },
+      token,
+    ),
   getApplicationRun: (token: string, runId: string) =>
     request<ApplicationRunDetail>(`/application-runs/${runId}`, {}, token),
   retryApplicationRun: (token: string, runId: string) =>

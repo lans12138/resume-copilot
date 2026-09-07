@@ -69,12 +69,15 @@ def _provider(snapshot: RankingSnapshot) -> object:
     return _Provider(snapshot)
 
 
-def _service(snapshot: RankingSnapshot) -> MatchRunService:
+def _service(
+    snapshot: RankingSnapshot, applications: object | None = None
+) -> MatchRunService:
     return MatchRunService(
         run_repository=InMemoryAgentRunRepository(),
         match_run_repository=InMemoryMatchRunRepository(),
         candidate_repository=InMemoryMatchRunCandidateRepository(),
         rankings=_provider(snapshot),  # type: ignore[arg-type]
+        applications=applications,  # type: ignore[arg-type]
         concurrency=4,
     )
 
@@ -100,7 +103,6 @@ def _run(
             model_config={"model": "fake"},
             prompt_version="v1",
             rule_version="v1",
-            application_ids=_application_ids(fused),
         )
     )
     asyncio.run(
@@ -133,6 +135,55 @@ def test_match_run_writes_candidate_snapshots_in_order() -> None:
     assert all(c.hard_rule_result_json is not None for c in candidates)
     # The run itself reached a terminal success state.
     assert run.status == RunStatus.COMPLETED
+
+
+def test_match_run_resolves_durable_application_ids() -> None:
+    asyncio.run(_match_run_resolves_durable_application_ids())
+
+
+async def _match_run_resolves_durable_application_ids() -> None:
+    profile_ids = [uuid4(), uuid4()]
+    application_ids = {profile_id: uuid4() for profile_id in profile_ids}
+
+    class _Applications:
+        requested_job_id: UUID | None = None
+        requested_profile_ids: list[UUID] = []
+
+        async def get_or_create(
+            self, *, job_id: UUID, profile_ids: list[UUID]
+        ) -> dict[UUID, UUID]:
+            self.requested_job_id = job_id
+            self.requested_profile_ids = profile_ids
+            return application_ids
+
+    applications = _Applications()
+    snapshot = _snapshot(
+        [
+            _candidate(profile_id, order, HardRuleOutcome.PASS)
+            for order, profile_id in enumerate(profile_ids, start=1)
+        ]
+    )
+    service = _service(snapshot, applications)
+    job_id = uuid4()
+    run, match_run = await service.create_match_run(
+        job_id=job_id,
+        job_version_id=JOB_VERSION_ID,
+        actor_id=uuid4(),
+        retrieval_config={"top_k": 10},
+        model_config={"model": "fake"},
+        prompt_version="v1",
+        rule_version="v1",
+    )
+
+    await service.execute_match_run(run=run, match_run=match_run)
+
+    candidates = await service._candidates.get_candidates(run.id)  # noqa: SLF001
+    assert applications.requested_job_id == job_id
+    assert applications.requested_profile_ids == profile_ids
+    assert {
+        candidate.candidate_profile_id: candidate.application_id
+        for candidate in candidates
+    } == application_ids
 
 
 def test_node_and_event_sequence_is_ordered() -> None:

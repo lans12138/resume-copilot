@@ -477,7 +477,6 @@ def test_match_run_persists_reports_on_completion() -> None:
             model_config={"model": "fake"},
             prompt_version="v1",
             rule_version="v1",
-            application_ids=application_ids,
         )
     )
     asyncio.run(

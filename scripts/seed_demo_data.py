@@ -63,6 +63,10 @@ from backend.app.infrastructure.database import (  # noqa: E402
     build_engine,
     build_session_factory,
 )
+from backend.app.job_applications.models import (  # noqa: E402
+    ApplicationStatus,
+    JobApplication,
+)
 from backend.app.jobs.models import Job, JobAssignment, JobStatus, JobVersion  # noqa: E402
 
 DEMO_USERNAME = "hr.demo"
@@ -185,6 +189,9 @@ async def _reset(session: AsyncSession) -> None:
     )
     await session.execute(delete(EvidenceChunk).where(EvidenceChunk.id.in_(chunk_ids)))
     await session.execute(
+        delete(JobApplication).where(JobApplication.job_id.in_(demo_job_ids))
+    )
+    await session.execute(
         delete(CandidateProfile).where(
             CandidateProfile.candidate_id.in_(demo_candidates)
         )
@@ -258,8 +265,8 @@ async def seed(reset: bool) -> None:
                 requirements_json={
                     "required_skills": ["Go", "Python", "PostgreSQL"],
                     "preferred_skills": ["Redis", "Kafka", "Kubernetes"],
-                    "min_years_experience": 3,
-                    "education": "本科及以上",
+                    "minimum_years_experience": 3,
+                    "education_level": "本科",
                 },
                 content_sha256=_sha256(description),
                 created_by=user.id,
@@ -359,6 +366,48 @@ async def seed(reset: bool) -> None:
             print(f"[seed] created {created} candidate profiles with evidence chunks")
         else:
             print("[seed] all demo candidates already present")
+
+        # 4) Durable hand-off records from MatchRun ranking to ApplicationRun.
+        demo_candidate_ids = list(
+            (
+                await session.execute(
+                    select(Candidate.id).where(
+                        Candidate.display_name.like(f"{DEMO_CANDIDATE_PREFIX}%")
+                    )
+                )
+            ).scalars()
+        )
+        existing_application_candidate_ids = set(
+            (
+                await session.execute(
+                    select(JobApplication.candidate_id).where(
+                        JobApplication.job_id == job.id,
+                        JobApplication.candidate_id.in_(demo_candidate_ids),
+                    )
+                )
+            ).scalars()
+        )
+        missing_application_candidate_ids = [
+            candidate_id
+            for candidate_id in demo_candidate_ids
+            if candidate_id not in existing_application_candidate_ids
+        ]
+        session.add_all(
+            [
+                JobApplication(
+                    job_id=job.id,
+                    candidate_id=candidate_id,
+                    status=ApplicationStatus.CREATED,
+                    version=1,
+                )
+                for candidate_id in missing_application_candidate_ids
+            ]
+        )
+        print(
+            "[seed] ensured "
+            f"{len(demo_candidate_ids)} demo JobApplications "
+            f"({len(missing_application_candidate_ids)} created)"
+        )
 
         await uow.commit()
 

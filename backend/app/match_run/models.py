@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -91,8 +92,11 @@ class MatchRunCandidate(Base):
             ["candidate_profiles.id"],
             name="fk_match_run_candidates_profile",
         ),
-        # ``application_id`` targets job_applications, modeled in IMP-021; until
-        # then it is a plain uuid column (no FK) so the run stays hermetic.
+        ForeignKeyConstraint(
+            ["application_id"],
+            ["job_applications.id"],
+            name="fk_match_run_candidates_application",
+        ),
         UniqueConstraint(
             "run_id", "candidate_profile_id", name="uq_match_run_candidates_profile"
         ),
@@ -115,6 +119,13 @@ class MatchRunCandidate(Base):
     # PASS/FAIL/UNKNOWN per rule plus the aggregate; present after hard_rule_evaluate.
     hard_rule_result_json: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     processing_status: Mapped[ProcessingStatus] = mapped_column(
-        String(32), default=ProcessingStatus.PENDING, nullable=False
+        Enum(
+            ProcessingStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        default=ProcessingStatus.PENDING,
+        nullable=False,
     )
     error_code: Mapped[str | None] = mapped_column(String(64))

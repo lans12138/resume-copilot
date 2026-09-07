@@ -4,10 +4,11 @@ The create transaction is the gate the detailed design §11.3 and G4 require:
 
 1. resolve the application and authorize the actor on its job;
 2. (optionally) verify the triggering MatchReport belongs to this application;
-3. **atomically claim the exclusive slot** — ``claim_active_run`` returns
+3. insert ``AgentRun`` and its ``ApplicationRun`` child in the open transaction;
+4. **atomically claim the exclusive slot** — ``claim_active_run`` returns
    ``APPLICATION_RUN_ALREADY_ACTIVE``/409 the instant the slot is taken, so two
-   concurrent creates for the same application end with exactly one success;
-4. insert ``AgentRun`` (CREATED, then RUNNING) and the ``ApplicationRun`` child;
+   concurrent creates for the same application end with exactly one committed
+   success (a losing SQL transaction rolls its provisional rows back);
 5. execute the fixed graph, which pauses at ``human_review`` in
    ``WAITING_APPROVAL`` while the slot stays occupied.
 
@@ -103,8 +104,9 @@ class ApplicationRunService:
                     details={"match_report_id": str(match_report_id)},
                 )
 
-        # Generate the run id first so the slot can be claimed atomically before
-        # anything is persisted; the conditional UPDATE decides the winner.
+        # The active-slot composite FK points at ApplicationRun, so persist both
+        # run rows in the open transaction before the conditional UPDATE. A
+        # concurrent loser rolls these provisional rows back with its request.
         run_id = uuid4()
         run = await self._run_service.create_run(
             run_type=RunType.APPLICATION,
@@ -117,15 +119,15 @@ class ApplicationRunService:
             thread_id=run_id.hex,
             attempt=attempt,
         )
-        # Atomically claim the slot; raises 409 if already occupied.
-        await self._app_repo.claim_active_run(application_id, run_id)
-
         application_run = ApplicationRun(
             run_id=run_id,
             application_id=application_id,
             match_report_id=match_report_id,
         )
         await self._arun_repo.save_application_run(application_run)
+
+        # Atomically claim the slot; raises 409 if already occupied.
+        await self._app_repo.claim_active_run(application_id, run_id)
 
         graph = build_application_graph()
         initial_state: dict[str, Any] = {

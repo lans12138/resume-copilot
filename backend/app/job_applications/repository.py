@@ -148,6 +148,7 @@ class SqlJobApplicationRepository:
             app = await self._session.get(JobApplication, application_id)
             if app is None:
                 raise _not_found()
+            await self._session.refresh(app)
             raise app_error(
                 "APPLICATION_RUN_ALREADY_ACTIVE",
                 http_status=409,
@@ -155,6 +156,9 @@ class SqlJobApplicationRepository:
                 details={"current_run_id": str(app.active_application_run_id)},
             )
         await self._session.flush()
+        app = await self._session.get(JobApplication, application_id)
+        if app is not None:
+            await self._session.refresh(app)
 
     async def clear_active_run(self, application_id: UUID, expected_run_id: UUID) -> None:
         await self._session.execute(
