@@ -1,4 +1,5 @@
-import { StatusBadge } from "./RunStatusBadge"
+import type { InterviewStatus } from "../api/types"
+import { InterviewStatusBadge } from "./RunStatusBadge"
 
 interface Proposal {
   application_id: string
@@ -13,7 +14,7 @@ export function ScheduleResult({
   status,
 }: {
   proposal: Proposal | null
-  status: string | null
+  status: InterviewStatus | null
 }) {
   if (proposal === null) {
     return <p className="muted">尚未创建面试安排。</p>
@@ -21,7 +22,7 @@ export function ScheduleResult({
   return (
     <div className="run-stack">
       <div className="button-row" style={{ marginTop: 0 }}>
-        <StatusBadge kind="approval" status={status ?? "PENDING"} />
+        {status ? <InterviewStatusBadge status={status} /> : null}
       </div>
       <dl className="kv">
         <dt>时长</dt>

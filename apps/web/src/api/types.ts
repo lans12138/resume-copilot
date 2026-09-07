@@ -149,6 +149,7 @@ export interface CreateMatchRunRequest {
 export type ApprovalActionType = "UPDATE_APPLICATION_STATUS" | "CREATE_INTERVIEW_SCHEDULE"
 export type ApprovalStatus =
   | "PENDING" | "APPROVED" | "EDITED" | "REJECTED" | "EXECUTED" | "EXECUTION_FAILED" | "EXPIRED"
+export type InterviewStatus = "SCHEDULED" | "CANCELLED"
 export interface ApprovalDetail {
   id: string
   application_run_id: string
@@ -180,7 +181,7 @@ export interface ApplicationRunDetail {
   question_set: Record<string, unknown> | null
   current_approval: ApprovalDetail | null
   interview_external_id: string | null
-  interview_status: string | null
+  interview_status: InterviewStatus | null
   interview_id: string | null
 }
 export interface ApplicationRunSummary {
@@ -197,7 +198,7 @@ export interface InterviewDetail {
   run_id: string
   approval_id: string
   external_schedule_id: string
-  status: string
+  status: InterviewStatus
   created_at: string
   proposal: {
     application_id: string

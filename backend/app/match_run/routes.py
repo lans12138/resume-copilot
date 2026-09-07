@@ -19,6 +19,7 @@ from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.errors import app_error
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
@@ -37,6 +38,8 @@ from backend.app.match_run.schemas import (
     MatchRunSummary,
 )
 from backend.app.match_run.service import MatchRunService
+from backend.app.reports.repository import SqlReportRepository
+from backend.app.reports.service import ReportService
 
 router = APIRouter(prefix="/api/v1", tags=["match-runs"])
 
@@ -86,7 +89,12 @@ async def create_match_run(
             prompt_version=payload.prompt_version,
             rule_version=payload.rule_version,
         )
-        await service.execute_match_run(run=run, match_run=match_run)
+        await service.execute_match_run(
+            run=run,
+            match_run=match_run,
+            report_service=ReportService(SqlReportRepository(session)),
+            evidence_provider=SqlEvidenceChunkRepository(session),
+        )
         await session.commit()
         return MatchRunAccepted(run_id=run.id, job_id=job.id, status=run.status.value)
 
@@ -179,7 +187,12 @@ async def retry_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Ma
         if match_run is None:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         service = _build(session, resources, request.app.state.settings)
-        await service.execute_match_run(run=agent_run, match_run=match_run)
+        await service.execute_match_run(
+            run=agent_run,
+            match_run=match_run,
+            report_service=ReportService(SqlReportRepository(session)),
+            evidence_provider=SqlEvidenceChunkRepository(session),
+        )
         await session.commit()
         return MatchRunAccepted(
             run_id=agent_run.id, job_id=match_run.job_id, status=agent_run.status.value

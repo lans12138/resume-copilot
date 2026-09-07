@@ -5,7 +5,7 @@ import type { RunStatus } from "../api/types"
 import { ErrorNotice, LoadingState } from "../components/Feedback"
 import { CurrentApprovalCard } from "../components/CurrentApprovalCard"
 import { QuestionSet } from "../components/QuestionSet"
-import { RunStatusBadge } from "../components/RunStatusBadge"
+import { InterviewStatusBadge, RunStatusBadge } from "../components/RunStatusBadge"
 import { RunTimeline } from "../components/RunTimeline"
 import { useAppStore } from "../state/session"
 
@@ -68,7 +68,7 @@ export function ApplicationRunPage() {
           </div>
           {run.interview_id ? (
             <div className="button-row" style={{ marginTop: 0 }}>
-              <RunStatusBadge status={(run.interview_status ?? "COMPLETED") as RunStatus} />
+              {run.interview_status ? <InterviewStatusBadge status={run.interview_status} /> : null}
               <span className="badge badge-muted">外部编号 {run.interview_external_id?.slice(0, 8)}</span>
             </div>
           ) : (

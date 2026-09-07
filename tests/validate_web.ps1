@@ -48,6 +48,7 @@ try {
     [void] (Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'postgres', 'redis'))
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'storage-init'))
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate'))
+    [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'seed'))
     [void] (Invoke-Compose -Arguments @(
         'run', '--rm', '--no-deps', '--env', 'BOOTSTRAP_USERNAME=hr-web-demo',
         '--env', "BOOTSTRAP_PASSWORD=$testPassword", '--env', 'BOOTSTRAP_ROLE=HR',
@@ -62,7 +63,7 @@ try {
     }
     finally { Pop-Location }
 
-    Write-Output 'WEB_VALIDATION_OK browser=chromium flow=login-create-activate storage=session-only'
+    Write-Output 'WEB_VALIDATION_OK browser=chromium flow=login-match-application-dual-approval-interview storage=session-only'
 }
 finally {
     & docker compose --project-name $projectName --env-file $envFile --file $composeFile --file $composeOverride --profile tools down --volumes --remove-orphans --timeout 15 | Out-Host

@@ -24,6 +24,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -85,7 +86,15 @@ class MatchReport(Base):
     application_id: Mapped[UUID] = mapped_column(nullable=False)
     candidate_profile_id: Mapped[UUID] = mapped_column(nullable=False)
     overall_score: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
-    recommendation: Mapped[Recommendation] = mapped_column(String(32), nullable=False)
+    recommendation: Mapped[Recommendation] = mapped_column(
+        Enum(
+            Recommendation,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        nullable=False,
+    )
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     model_snapshot_json: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -109,8 +118,24 @@ class ReportClaim(Base):
     report_id: Mapped[UUID] = mapped_column(nullable=False)
     claim_type: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_text: Mapped[str] = mapped_column(Text, nullable=False)
-    impact_level: Mapped[ImpactLevel] = mapped_column(String(16), nullable=False)
-    support_level: Mapped[SupportLevel] = mapped_column(String(16), nullable=False)
+    impact_level: Mapped[ImpactLevel] = mapped_column(
+        Enum(
+            ImpactLevel,
+            native_enum=False,
+            create_constraint=False,
+            length=16,
+        ),
+        nullable=False,
+    )
+    support_level: Mapped[SupportLevel] = mapped_column(
+        Enum(
+            SupportLevel,
+            native_enum=False,
+            create_constraint=False,
+            length=16,
+        ),
+        nullable=False,
+    )
     confidence_note: Mapped[str | None] = mapped_column(Text)
     display_order: Mapped[int] = mapped_column(Integer, nullable=False)
 

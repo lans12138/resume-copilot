@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query"
 import { Link, useParams } from "react-router-dom"
 import { api } from "../api/client"
-import type { RunStatus } from "../api/types"
 import { ErrorNotice, LoadingState } from "../components/Feedback"
 import { QuestionSet } from "../components/QuestionSet"
-import { RunStatusBadge } from "../components/RunStatusBadge"
+import { InterviewStatusBadge } from "../components/RunStatusBadge"
 import { ScheduleResult } from "../components/ScheduleResult"
 import { useAppStore } from "../state/session"
 
@@ -33,7 +32,7 @@ export function InterviewPage() {
       <header className="page-heading">
         <div>
           <div className="detail-meta">
-            <RunStatusBadge status={(interview.status as RunStatus) ?? "COMPLETED"} />
+            <InterviewStatusBadge status={interview.status} />
             <span>面试安排 <code>{interview.id.slice(0, 8)}</code></span>
           </div>
           <h1>面试安排</h1>

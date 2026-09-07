@@ -1,4 +1,4 @@
-import type { ApprovalStatus, RunStatus } from "../api/types"
+import type { ApprovalStatus, InterviewStatus, RunStatus } from "../api/types"
 
 type Tone = "neutral" | "info" | "warn" | "ok" | "danger" | "muted"
 
@@ -38,6 +38,14 @@ const approvalTone: Record<ApprovalStatus, Tone> = {
   EXECUTION_FAILED: "danger",
   EXPIRED: "muted",
 }
+const interviewLabel: Record<InterviewStatus, string> = {
+  SCHEDULED: "已排期",
+  CANCELLED: "已取消",
+}
+const interviewTone: Record<InterviewStatus, Tone> = {
+  SCHEDULED: "ok",
+  CANCELLED: "muted",
+}
 
 export function RunStatusBadge({ status }: { status: RunStatus }) {
   return <span className={`badge badge-${runTone[status]}`}>{runLabel[status]}</span>
@@ -45,6 +53,10 @@ export function RunStatusBadge({ status }: { status: RunStatus }) {
 
 export function ApprovalStatusBadge({ status }: { status: ApprovalStatus }) {
   return <span className={`badge badge-${approvalTone[status]}`}>{approvalLabel[status]}</span>
+}
+
+export function InterviewStatusBadge({ status }: { status: InterviewStatus }) {
+  return <span className={`badge badge-${interviewTone[status]}`}>{interviewLabel[status]}</span>
 }
 
 export function StatusBadge({ kind, status }: { kind: "run" | "approval"; status: string }) {

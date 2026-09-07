@@ -137,6 +137,10 @@ class SqlEvidenceChunkRepository:
             )
         )
 
+    async def list_chunks(self, candidate_profile_id: UUID) -> list[EvidenceChunk]:
+        """Expose the evidence-provider port used during report generation."""
+        return await self.list_by_profile(candidate_profile_id)
+
     async def exists_index(self, document_id: UUID, chunk_index: int) -> bool:
         count = await self.session.scalar(
             select(func.count(EvidenceChunk.id)).where(
