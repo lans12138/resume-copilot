@@ -187,12 +187,26 @@ $requiredPlanContracts = @(
     '周出口门禁 G1',
     '周出口门禁 G6',
     '最后 2 天保留为显式缓冲',
-    '每个工作包在同一提交中包含相应测试'
+    '每个工作包在同一提交中包含相应测试',
+    '当前实际进度校准',
+    '项目完工待办事项清单',
+    '项目完工判定',
+    'FIN-001 至 FIN-013'
 )
 $missingPlanContracts = @(
     $requiredPlanContracts | Where-Object { -not $implementationPlan.Contains($_) }
 )
 Assert-Condition ($missingPlanContracts.Count -eq 0) "编码计划缺少关键契约：$($missingPlanContracts -join ', ')"
+
+$finishTaskMatches = [regex]::Matches($implementationPlan, '(?m)^\|\s*FIN-(\d{3})\s*\|')
+Assert-Condition ($finishTaskMatches.Count -eq 13) "编码计划完工任务数量异常：$($finishTaskMatches.Count)"
+$finishTaskNumbers = @(
+    $finishTaskMatches |
+        ForEach-Object { [int] $_.Groups[1].Value } |
+        Sort-Object
+)
+$finishTaskDifferences = @(Compare-Object $finishTaskNumbers @(1..13))
+Assert-Condition ($finishTaskDifferences.Count -eq 0) '编码计划完工任务编号不连续。'
 
 $environmentSectionMatches = [regex]::Matches($environmentChecklist, '(?m)^##\s+(\d+)\.')
 Assert-Condition ($environmentSectionMatches.Count -eq 19) "环境清单主章节数量异常：$($environmentSectionMatches.Count)"
