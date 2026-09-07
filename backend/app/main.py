@@ -30,8 +30,9 @@ from backend.app.reports.routes import router as reports_router
 from backend.app.sse.routes import router as sse_router
 
 
-async def _handle_idempotency_replay(request: Request, exc: IdempotencyReplay) -> JSONResponse:
+async def _handle_idempotency_replay(request: Request, exc: Exception) -> JSONResponse:
     """Replay a previously stored successful response verbatim (FIN-001)."""
+    assert isinstance(exc, IdempotencyReplay)
     return JSONResponse(
         status_code=exc.status,
         content=exc.body,
