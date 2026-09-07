@@ -27,6 +27,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -77,5 +78,5 @@ class IdempotencyRecord(Base):
         DateTime(timezone=True), server_default="now()", nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default="now()", onupdate="now()", nullable=False
+        DateTime(timezone=True), server_default="now()", onupdate=func.now(), nullable=False
     )
