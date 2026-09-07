@@ -149,7 +149,7 @@ try {
         -Uri "http://127.0.0.1:18008$($pdf.Body.items[0].status_url)" `
         -Headers @{ Authorization = "Bearer $hrToken" }
     $documentList = Invoke-RestMethod `
-        -Uri 'http://127.0.0.1:18008/api/v1/documents?status=UPLOADED' `
+        -Uri 'http://127.0.0.1:18008/api/v1/documents?status=QUEUED' `
         -Headers @{ Authorization = "Bearer $hrToken" }
 
     if (
@@ -181,7 +181,7 @@ try {
     }
     if (
         $statusView.id -ne $pdf.Body.items[0].resource_id -or
-        $statusView.status -ne 'UPLOADED' -or
+        $statusView.status -ne 'QUEUED' -or
         $documentList.total -ne 2
     ) {
         throw 'Document status URL or filtered list did not expose persisted facts.'
@@ -194,7 +194,7 @@ try {
         Invoke-Compose -Arguments @(
             'exec', '--no-TTY', 'postgres', 'psql', '-U', 'resume_app', '-d', 'resume_copilot',
             '-v', 'ON_ERROR_STOP=1', '-tAc',
-            "SELECT count(*) || '|' || bool_and(storage_key ~ '^objects/[0-9a-f]{2}/[0-9a-f]{32}`$') || '|' || bool_and(status = 'UPLOADED') FROM resume_documents;"
+            "SELECT count(*) || '|' || bool_and(storage_key ~ '^objects/[0-9a-f]{2}/[0-9a-f]{32}`$') || '|' || bool_and(status = 'QUEUED') FROM resume_documents;"
         ) | Select-Object -Last 1
     ).Trim()
     $objectCount = (

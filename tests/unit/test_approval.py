@@ -167,7 +167,9 @@ async def _approve_resume() -> None:
     second = await approval_service.get_pending_by_run(run.id)
     assert second is not None
     assert second.action_type is ApprovalActionType.CREATE_INTERVIEW_SCHEDULE
-    run2 = await svc.decide_approval(_actor(), second.id, DecisionAction.APPROVE, expected_version=1)
+    run2 = await svc.decide_approval(
+        _actor(), second.id, DecisionAction.APPROVE, expected_version=1
+    )
     assert run2.status is RunStatus.COMPLETED
     refreshed2 = await app_repo.get_application(app_id)
     assert refreshed2 is not None

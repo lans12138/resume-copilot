@@ -10,7 +10,7 @@ which the *same* idempotency key can be retried to a successful EXECUTED state.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -25,7 +25,12 @@ from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
 from backend.app.interviews.repository import InMemoryInterviewRepository
-from backend.app.interviews.schedule import MockScheduleBackend, ScheduleProposal, ScheduleResult
+from backend.app.interviews.schedule import MockScheduleBackend
+from backend.app.interviews.schemas import (
+    ScheduleProposal,
+    ScheduleResult,
+    ScheduleStatus,
+)
 from backend.app.job_applications.models import ApplicationRun, ApplicationStatus, JobApplication
 from backend.app.job_applications.repository import (
     InMemoryApplicationRunRepository,
@@ -112,7 +117,9 @@ def _core_with_side_effects(
     )
 
 
-async def _create_run(svc: ApplicationRunService, app_repo: InMemoryJobApplicationRepository) -> tuple[AgentRun, ApplicationRun, UUID]:
+async def _create_run(
+    svc: ApplicationRunService, app_repo: InMemoryJobApplicationRepository
+) -> tuple[AgentRun, ApplicationRun, UUID]:
     job_id = uuid4()
     app = _application(job_id, uuid4())
     await app_repo.save_application(app)
@@ -223,7 +230,7 @@ class _FlakyScheduleBackend:
             raise _RetryableScheduleError("schedule backend outage")
         result = ScheduleResult(
             external_schedule_id=f"mock-ok-{self.calls}",
-            status="SCHEDULED",
+            status=ScheduleStatus.SCHEDULED,
             application_id=application_id,
             created_at=datetime.now(tz=UTC),
             proposal=proposal,

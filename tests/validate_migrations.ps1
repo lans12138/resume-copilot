@@ -103,6 +103,15 @@ try {
     [void] (Invoke-Compose -Arguments @(
         '--profile', 'tools', 'run', '--rm', 'migrate', 'alembic', 'check'
     ))
+    # The new workflow migration is reversible and can be reapplied cleanly.
+    [void] (Invoke-Compose -Arguments @(
+        '--profile', 'tools', 'run', '--rm', 'migrate',
+        'alembic', 'downgrade', '0007_add_parsed_json'
+    ))
+    [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate'))
+    [void] (Invoke-Compose -Arguments @(
+        '--profile', 'tools', 'run', '--rm', 'migrate', 'alembic', 'check'
+    ))
 
     $revision = (
         Invoke-Compose -Arguments @(
@@ -111,8 +120,45 @@ try {
             '-v', 'ON_ERROR_STOP=1', '-tAc', 'SELECT version_num FROM alembic_version;'
         ) | Select-Object -Last 1
     ).Trim()
-    if ($revision -ne '0004_create_resume_documents') {
+    if ($revision -ne '0008_create_workflow_tables') {
         throw "Unexpected Alembic revision: $revision"
+    }
+
+    $expectedTablesSql = @"
+SELECT count(*)
+FROM (VALUES
+    ('agent_events'),
+    ('agent_runs'),
+    ('application_runs'),
+    ('application_status_history'),
+    ('approvals'),
+    ('candidate_profiles'),
+    ('candidates'),
+    ('claim_evidences'),
+    ('evidence_chunks'),
+    ('interviews'),
+    ('job_applications'),
+    ('job_assignments'),
+    ('job_versions'),
+    ('jobs'),
+    ('match_reports'),
+    ('match_run_candidates'),
+    ('match_runs'),
+    ('report_claims'),
+    ('resume_documents'),
+    ('users')
+) AS expected(name)
+WHERE to_regclass('public.' || name) IS NULL;
+"@
+    $missingTableCount = (
+        Invoke-Compose -Arguments @(
+            'exec', '--no-TTY', 'postgres',
+            'psql', '-U', 'resume_app', '-d', 'resume_copilot',
+            '-v', 'ON_ERROR_STOP=1', '-tAc', $expectedTablesSql
+        ) | Select-Object -Last 1
+    ).Trim()
+    if ($missingTableCount -ne '0') {
+        throw "Migration left $missingTableCount expected ORM tables missing."
     }
 
     $vectorDimension = (
@@ -161,7 +207,7 @@ try {
 
     Write-Output (
         'MIGRATION_VALIDATION_OK ' +
-        "revision=$revision vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
+        "revision=$revision tables=20 vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
     )
 }
 finally {

@@ -7,7 +7,7 @@ ceiling that later refactors must not regress.
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from backend.app.core.metrics import Histogram, Timer
 from backend.app.retrieval.fusion import fuse
@@ -57,7 +57,7 @@ def test_fusion_p95_under_baseline() -> None:
     )
 
     histogram = Histogram("fusion_duration_ms")
-    first: list = []
+    first: list[UUID] = []
     for _ in range(_ITERATIONS):
         with Timer(histogram):
             result = fuse(bundle, config)

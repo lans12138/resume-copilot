@@ -17,7 +17,7 @@ def test_settings_accept_explicit_test_configuration() -> None:
 
 def test_settings_report_missing_required_field_names() -> None:
     with pytest.raises(ValidationError) as captured:
-        Settings(_env_file=None, app_env="test")
+        Settings.model_validate({"app_env": "test"})
 
     message = str(captured.value)
     assert "jwt_secret" in message

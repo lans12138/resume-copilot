@@ -9,7 +9,7 @@ resolve an interview from its parent run: ``MatchRunRepository.list_by_job``,
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from backend.app.interviews.models import Interview
 from backend.app.interviews.repository import InMemoryInterviewRepository
@@ -19,10 +19,10 @@ from backend.app.match_run.models import MatchRun
 from backend.app.match_run.repository import InMemoryMatchRunRepository
 
 
-def _match_run(job_id: object) -> MatchRun:
+def _match_run(job_id: UUID) -> MatchRun:
     return MatchRun(
         run_id=uuid4(),
-        job_id=job_id,  # type: ignore[arg-type]
+        job_id=job_id,
         job_version_id=uuid4(),
         retrieval_config_json={},
         model_config_json={},

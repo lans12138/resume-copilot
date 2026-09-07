@@ -18,6 +18,6 @@ def make_settings(**overrides: object) -> Settings:
         "log_format": "json",
     }
     values.update(overrides)
-    # `_env_file=None` keeps unit tests independent of the local project .env so
-    # required-field and credential-gate assertions behave the same in CI and locally.
-    return Settings(_env_file=None, **values)
+    # ``model_validate`` bypasses BaseSettings environment sources, keeping unit
+    # tests independent of the local project .env in a type-safe way.
+    return Settings.model_validate(values)

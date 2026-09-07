@@ -25,7 +25,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from backend.app.agent.checkpoint import InMemoryCheckpointer
-from backend.app.agent.models import AgentEvent, AgentEventType, RunStatus, RunType
+from backend.app.agent.models import AgentEventType, AgentRun, RunStatus, RunType
 from backend.app.agent.repository import InMemoryAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.models import UserRole
@@ -74,7 +74,7 @@ def _sse_service(
 
 async def _create_run(
     run_service: RunService, *, run_type: RunType = RunType.APPLICATION
-) -> tuple[AgentEvent, UUID]:
+) -> tuple[AgentRun, UUID]:
     job_id = uuid4()
     run_id = uuid4()
     run = await run_service.create_run(

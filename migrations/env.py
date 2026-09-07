@@ -8,17 +8,10 @@ from alembic import context
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from backend.app.auth.models import User
-from backend.app.candidates import models as candidate_models
 from backend.app.core.settings import get_settings
-from backend.app.documents import models as document_models
-from backend.app.jobs import models as job_models
+from backend.app.infrastructure.model_registry import get_model_metadata
 
-target_metadata = User.metadata
-assert job_models.Job.__table__.metadata is target_metadata
-assert document_models.ResumeDocument.__table__.metadata is target_metadata
-assert candidate_models.Candidate.__table__.metadata is target_metadata
-assert candidate_models.CandidateProfile.__table__.metadata is target_metadata
+target_metadata = get_model_metadata()
 
 
 def database_url() -> str:
