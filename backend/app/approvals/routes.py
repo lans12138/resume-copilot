@@ -12,12 +12,11 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 
 from backend.app.approvals.schemas import ApprovalDetail, DecisionRequest
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
-from backend.app.idempotency.dependency import IdempotencyGuardDep
 from backend.app.job_applications.service import ApplicationRunService
 from backend.app.job_applications.wiring import application_run_service
 
@@ -46,12 +45,13 @@ async def decide_approval(
     body: DecisionRequest,
     actor: ActorDep,
     service: ServiceDep,
-    request: Request,
-    guard: IdempotencyGuardDep,
 ) -> ApprovalDetail:
-    # The ``Idempotency-Key`` header is enforced at the request level here (FIN-001):
-    # an identical retried request replays the first response; a different request
-    # under the same key is rejected with 409 IDEMPOTENCY_KEY_REUSED.
+    # Idempotency is enforced at the business level by ``ApprovalService.decide``:
+    # a non-PENDING approval is rejected with 409 APPROVAL_ALREADY_DECIDED, and an
+    # optimistic version guards concurrent editors. Side effects are applied exactly
+    # once by ``ApplicationSideEffectService`` keyed on ``approval.idempotency_key``.
+    # FIN-001 request-level replay is intentionally NOT applied here: it would
+    # short-circuit that 409 guard and mask already-decided approvals behind a 200.
     await service.decide_approval(
         actor,
         approval_id,
@@ -60,6 +60,4 @@ async def decide_approval(
         edited_params=body.edited_params,
     )
     approval = await service.get_approval_for_actor(actor, approval_id)
-    detail = ApprovalDetail.from_approval(approval)
-    await guard.complete(200, detail.model_dump(mode="json"), resource_id=str(approval.id))
-    return detail
+    return ApprovalDetail.from_approval(approval)
