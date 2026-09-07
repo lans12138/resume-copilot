@@ -13,6 +13,20 @@ from backend.app.infrastructure.model_registry import get_model_metadata
 
 target_metadata = get_model_metadata()
 
+# Diagnostic: surface the resolved target metadata so a "missing table" failure
+# in CI (e.g. alembic check reporting a remove_table) can be traced to the exact
+# set of registered tables. Cheap and only emitted while alembic runs.
+import os as _os
+import sys as _sys
+
+if _os.environ.get("ALEMBIC_DIAGNOSE"):
+    _tables = sorted(target_metadata.tables)
+    _sys.stderr.write(
+        f"[alembic-env] table_count={len(_tables)} "
+        f"has_idempotency_records={'idempotency_records' in target_metadata.tables}\n"
+        f"[alembic-env] tables={_tables}\n"
+    )
+
 
 def database_url() -> str:
     settings = get_settings()

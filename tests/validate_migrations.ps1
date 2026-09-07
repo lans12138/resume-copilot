@@ -91,7 +91,7 @@ try {
         throw 'The migrate service must run only alembic upgrade head.'
     }
 
-    [void] (Invoke-Compose -Arguments @('build', 'api'))
+    [void] (Invoke-Compose -Arguments @('build', '--no-cache', 'api'))
     [void] (Invoke-Compose -Arguments @(
         'up', '--detach', '--wait', '--wait-timeout', '120', 'postgres', 'redis'
     ))
@@ -101,7 +101,7 @@ try {
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate'))
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate'))
     [void] (Invoke-Compose -Arguments @(
-        '--profile', 'tools', 'run', '--rm', 'migrate', 'alembic', 'check'
+        '--profile', 'tools', 'run', '--rm', '-e', 'ALEMBIC_DIAGNOSE=true', 'migrate', 'alembic', 'check'
     ))
     # The new workflow migration is reversible and can be reapplied cleanly.
     [void] (Invoke-Compose -Arguments @(
@@ -110,7 +110,7 @@ try {
     ))
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate'))
     [void] (Invoke-Compose -Arguments @(
-        '--profile', 'tools', 'run', '--rm', 'migrate', 'alembic', 'check'
+        '--profile', 'tools', 'run', '--rm', '-e', 'ALEMBIC_DIAGNOSE=true', 'migrate', 'alembic', 'check'
     ))
 
     $revision = (
