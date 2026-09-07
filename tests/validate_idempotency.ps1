@@ -62,9 +62,13 @@ try {
 
     # Run the PostgreSQL integration suite inside the dev container, attached to the
     # compose network so DATABASE_URL (host ``postgres``) resolves.
+    # NOTE: precompute the network name into its own variable. Inlining
+    # ``"$projectName" + '_backend'`` inside an array literal makes PowerShell emit
+    # two separate arguments, which docker then reads as an invalid image reference.
+    $networkName = "$projectName" + '_backend'
     $pytestArgs = @(
         'run', '--rm',
-        '--network', "$projectName" + '_backend',
+        '--network', $networkName,
         '--env-file', $envFile,
         $backendDevelopmentImage,
         'pytest', '-q', 'tests/integration/test_idempotency_postgres.py'
