@@ -15,7 +15,15 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +50,16 @@ class Interview(Base):
         CheckConstraint(
             "external_schedule_id IS NOT NULL", name="ck_interviews_external_id"
         ),
+        ForeignKeyConstraint(
+            ["run_id"],
+            ["application_runs.run_id"],
+            name="fk_interviews_run",
+        ),
+        ForeignKeyConstraint(
+            ["approval_id", "run_id"],
+            ["approvals.id", "approvals.application_run_id"],
+            name="fk_interviews_approval_run",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -53,7 +71,14 @@ class Interview(Base):
     external_schedule_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     schedule_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     status: Mapped[InterviewStatus] = mapped_column(
-        String(32), default=InterviewStatus.SCHEDULED, nullable=False
+        Enum(
+            InterviewStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        default=InterviewStatus.SCHEDULED,
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -25,6 +25,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -73,6 +74,7 @@ class Approval(Base):
             name="ck_approvals_action_type",
         ),
         UniqueConstraint("idempotency_key", name="uq_approvals_idempotency_key"),
+        UniqueConstraint("id", "application_run_id", name="uq_approvals_id_run"),
         # At most one PENDING approval per run (node replay returns the existing one).
         Index(
             "uq_approvals_pending_run",
@@ -91,12 +93,24 @@ class Approval(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     application_run_id: Mapped[UUID] = mapped_column(nullable=False)
     action_type: Mapped[ApprovalActionType] = mapped_column(
-        String(64),
+        Enum(
+            ApprovalActionType,
+            native_enum=False,
+            create_constraint=False,
+            length=64,
+        ),
         default=ApprovalActionType.UPDATE_APPLICATION_STATUS,
         nullable=False,
     )
     status: Mapped[ApprovalStatus] = mapped_column(
-        String(32), default=ApprovalStatus.PENDING, nullable=False
+        Enum(
+            ApprovalStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        default=ApprovalStatus.PENDING,
+        nullable=False,
     )
     # Agent proposal, frozen at pause time (§11.4).
     original_params_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)

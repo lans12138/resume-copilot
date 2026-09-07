@@ -20,11 +20,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKeyConstraint,
+    Identity,
     Index,
     Integer,
     String,
@@ -135,6 +137,42 @@ class AgentRun(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentCheckpoint(Base):
+    """Durable, ordered graph checkpoint used to resume after process restart."""
+
+    __tablename__ = "agent_checkpoints"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["thread_id"],
+            ["agent_runs.thread_id"],
+            name="fk_agent_checkpoints_thread",
+        ),
+        UniqueConstraint(
+            "thread_id",
+            "checkpoint_ns",
+            "checkpoint_id",
+            name="uq_agent_checkpoints_identity",
+        ),
+        Index(
+            "ix_agent_checkpoints_thread_latest",
+            "thread_id",
+            "checkpoint_ns",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    checkpoint_ns: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    checkpoint_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_id: Mapped[str | None] = mapped_column(String(64))
+    checkpoint_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class AgentEvent(Base):

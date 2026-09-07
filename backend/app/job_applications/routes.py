@@ -8,30 +8,22 @@ Endpoints (detailed design §12.5):
 * ``GET /applications/{id}/runs`` — list the application's runs (history allowed).
 * ``GET /application-runs/{id}`` — single run detail.
 
-Approval, decision, cancel, and resume endpoints land in IMP-022/023. The
-checkpointer used here is in-process (``InMemoryCheckpointer``); IMP-030 swaps it
-for an ``AsyncPostgresSaver`` without touching the service or graph.
+Approval decisions, side effects, checkpoints, and interviews share a PostgreSQL
+transaction assembled by ``job_applications.wiring``.
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from typing import Annotated, Any
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 
-from backend.app.agent.repository import SqlAgentRunRepository
-from backend.app.agent.service import RunService
-from backend.app.approvals.repository import SqlApprovalRepository
 from backend.app.approvals.schemas import ApprovalDetail
-from backend.app.approvals.service import ApprovalService
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
-from backend.app.interviews.repository import InMemoryInterviewRepository, SqlInterviewRepository
-from backend.app.interviews.schedule import MockScheduleBackend
+from backend.app.interviews.repository import SqlInterviewRepository
 from backend.app.job_applications.repository import (
-    SqlApplicationRunRepository,
     SqlJobApplicationRepository,
 )
 from backend.app.job_applications.schemas import (
@@ -41,68 +33,10 @@ from backend.app.job_applications.schemas import (
     RunAccepted,
 )
 from backend.app.job_applications.service import ApplicationRunService
-from backend.app.job_applications.side_effects import ApplicationSideEffectService
+from backend.app.job_applications.wiring import application_run_service
 from backend.app.jobs.service import JobService
-from backend.app.reports.models import MatchReport
 
 router = APIRouter(prefix="/api/v1", tags=["application-runs"])
-
-
-async def application_run_service(request: Request) -> AsyncGenerator[ApplicationRunService, None]:
-    """Build the service per request from process resources (yield = DI scope)."""
-    resources = request.app.state.resources
-    async with resources.session_factory() as session:
-        agent_repo = SqlAgentRunRepository(session)
-        # Shared process checkpointer so a WAITING_APPROVAL run resumes across
-        # requests (the real PG saver arrives in IMP-030, §17.2).
-        run_service = RunService(
-            agent_repo, resources.checkpointer, notifier=resources.event_notifier
-        )
-        app_repo = SqlJobApplicationRepository(session)
-        arun_repo = SqlApplicationRunRepository(session)
-        approval_repo = SqlApprovalRepository(session)
-
-        async def authorize(actor: Actor, job_id: UUID) -> None:
-            await JobService(session).get_authorized(actor, job_id)
-
-        async def report_lookup(report_id: UUID) -> Any | None:
-            return await session.get(MatchReport, report_id)
-
-        approval_service = ApprovalService(
-            authorize=authorize,
-            approval_repo=approval_repo,
-            arun_repo=arun_repo,
-            app_repo=app_repo,
-            run_service=run_service,
-        )
-        # MVP schedule backend: in-process MockScheduleBackend, idempotent on the
-        # approval key. A real calendar would swap this for an Outbox-backed client
-        # (§11.7). The interview store is per-request here; production shares the
-        # session-scoped repository (IMP-030 wires PG).
-        interview_repo = InMemoryInterviewRepository()
-        schedule_backend = MockScheduleBackend()
-        side_effects = ApplicationSideEffectService(
-            approval_service=approval_service,
-            app_repo=app_repo,
-            arun_repo=arun_repo,
-            run_service=run_service,
-            interview_repo=interview_repo,
-            schedule_backend=schedule_backend,
-        )
-        try:
-            yield ApplicationRunService(
-                app_repo=app_repo,
-                arun_repo=arun_repo,
-                run_service=run_service,
-                authorize=authorize,
-                approval_service=approval_service,
-                report_lookup=report_lookup,
-                side_effects=side_effects,
-            )
-            await session.commit()
-        except BaseException:
-            await session.rollback()
-            raise
 
 
 ServiceDep = Annotated[

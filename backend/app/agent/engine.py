@@ -9,8 +9,9 @@ each status transition, and it persists the bounded graph state to a
 (metadata["next_node"]) plus the run status to decide where to continue, which
 is exactly the recovery contract from detailed design §17.2.
 
-Replacing this engine with a real LangGraph ``StateGraph`` wired to an
-``AsyncPostgresSaver`` is a later IMP; the event/checkpoint contracts here stay.
+The API wires this engine to ``SqlCheckpointer`` so interrupts survive process
+restarts; the event/checkpoint contracts remain portable to a future LangGraph
+``StateGraph`` implementation.
 """
 
 from __future__ import annotations

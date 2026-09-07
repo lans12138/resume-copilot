@@ -114,6 +114,11 @@ class ApplicationRun(Base):
         ForeignKeyConstraint(
             ["application_id"], ["job_applications.id"], name="fk_application_runs_application"
         ),
+        ForeignKeyConstraint(
+            ["match_report_id"],
+            ["match_reports.id"],
+            name="fk_application_runs_match_report",
+        ),
         # Composite identity referenced by the job_applications active slot.
         UniqueConstraint("run_id", "application_id", name="uq_application_runs_run_application"),
         Index("ix_application_runs_application", "application_id"),
@@ -121,7 +126,7 @@ class ApplicationRun(Base):
 
     run_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     application_id: Mapped[UUID] = mapped_column(nullable=False)
-    # Report that triggered this flow (match_reports FK, added in IMP-030).
+    # Optional report that triggered this flow.
     match_report_id: Mapped[UUID | None] = mapped_column(nullable=True)
     completion_reason: Mapped[str | None] = mapped_column(String(64))
     question_set_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
@@ -152,8 +157,12 @@ class ApplicationStatusHistory(Base):
     # Actor who decided the approval that caused the change (audit only).
     changed_by: Mapped[UUID | None] = mapped_column(nullable=True)
     # Run and approval that drove the change; null for manual edits.
-    run_id: Mapped[UUID | None] = mapped_column(nullable=True)
-    approval_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("application_runs.run_id"), nullable=True
+    )
+    approval_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("approvals.id"), nullable=True
+    )
     # Bounded, safe reason (never free text from untrusted documents).
     safe_reason: Mapped[str | None] = mapped_column(String(256))
     changed_at: Mapped[datetime] = mapped_column(

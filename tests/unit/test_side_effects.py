@@ -132,7 +132,9 @@ def test_update_status_executed_once_and_idempotent() -> None:
 
 
 async def _update_once() -> None:
-    app_repo, _ar, _rs, _apr, approval_service, side_effects, svc, _iv = _core_with_side_effects()
+    app_repo, arun_repo, _rs, _apr, approval_service, side_effects, svc, interview_repo = (
+        _core_with_side_effects()
+    )
     agent_run, _app_run, app_id = await _create_run(svc, app_repo)
 
     # First approval (APPROVE) applies the status change exactly once.
@@ -145,6 +147,11 @@ async def _update_once() -> None:
     assert refreshed is not None
     assert refreshed.status is ApplicationStatus.SHORTLISTED
     assert refreshed.version == 3  # claim + one transition applied
+    persisted_run = await arun_repo.get_application_run(agent_run.id)
+    assert persisted_run is not None
+    assert persisted_run.question_schema_version == "v1"
+    assert persisted_run.question_set_json is not None
+    assert persisted_run.question_set_json["questions"]
 
     # Re-executing the same (now EXECUTED) approval is a no-op.
     reread = await approval_service.get_approval(first.id)
@@ -157,13 +164,35 @@ async def _update_once() -> None:
     assert refreshed2.status is ApplicationStatus.SHORTLISTED
     assert refreshed2.version == 3  # unchanged: no second transition
 
+    # The second approval persists the interview, completes the run, and frees
+    # the exclusive application slot.
+    second = await approval_service.get_pending_by_run(agent_run.id)
+    assert second is not None
+    completed = await svc.decide_approval(
+        _actor(), second.id, DecisionAction.APPROVE, expected_version=1
+    )
+    assert completed.status is RunStatus.COMPLETED
+    completed_run = await arun_repo.get_application_run(agent_run.id)
+    assert completed_run is not None
+    assert completed_run.completion_reason == "SUCCESS"
+    completed_app = await app_repo.get_application(app_id)
+    assert completed_app is not None
+    assert completed_app.status is ApplicationStatus.INTERVIEW_SCHEDULED
+    assert completed_app.active_application_run_id is None
+    interview = await interview_repo.get_by_approval(second.id)
+    assert interview is not None
+    assert interview.schedule_json is not None
+    assert interview.schedule_json["application_id"] == str(app_id)
+
 
 def test_non_shortlisted_skips_second_approval() -> None:
     asyncio.run(_non_shortlisted())
 
 
 async def _non_shortlisted() -> None:
-    app_repo, _ar, _rs, _apr, approval_service, _se, svc, _iv = _core_with_side_effects()
+    app_repo, arun_repo, _rs, _apr, approval_service, _se, svc, _iv = (
+        _core_with_side_effects()
+    )
     agent_run, _app_run, app_id = await _create_run(svc, app_repo)
 
     first = await approval_service.get_pending_by_run(agent_run.id)
@@ -180,6 +209,9 @@ async def _non_shortlisted() -> None:
     refreshed = await app_repo.get_application(app_id)
     assert refreshed is not None
     assert refreshed.status is ApplicationStatus.ON_HOLD
+    completed_run = await arun_repo.get_application_run(agent_run.id)
+    assert completed_run is not None
+    assert completed_run.completion_reason == "SUCCESS"
     # No schedule approval was created.
     second = await approval_service.get_pending_by_run(run.id)
     assert second is None

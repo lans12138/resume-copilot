@@ -24,6 +24,7 @@ from backend.app.reports import models as report_models
 MIGRATED_MODEL_TABLES = frozenset(
     {
         "agent_events",
+        "agent_checkpoints",
         "agent_runs",
         "application_runs",
         "application_status_history",

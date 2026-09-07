@@ -151,6 +151,11 @@ class ApplicationRunService:
             "action_type": "UPDATE_APPLICATION_STATUS",
             "original_params": {"target_status": "SHORTLISTED"},
         }
+        proposed_params = (
+            proposal.get("original_params", {})
+            if isinstance(proposal, dict)
+            else {}
+        )
         await self._approval_service.create_approval(
             actor,
             agent_run=run,
@@ -158,7 +163,7 @@ class ApplicationRunService:
             application=application,
             action_type=ApprovalActionType.UPDATE_APPLICATION_STATUS,
             ordinal=1,
-            proposed_params=proposal,
+            proposed_params=proposed_params,
         )
         return run, application_run
 
@@ -170,6 +175,7 @@ class ApplicationRunService:
         *,
         expected_version: int,
         edited_params: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> AgentRun:
         """Decide a pending approval; apply the gated side effect and resume.
 
@@ -194,6 +200,7 @@ class ApplicationRunService:
             decision,
             expected_version=expected_version,
             edited_params=edited_params,
+            idempotency_key=idempotency_key,
         )
         application_run = await self._arun_repo.get_application_run(approval.application_run_id)
         if application_run is None:
@@ -215,10 +222,19 @@ class ApplicationRunService:
             if self._side_effects is not None:
                 await self._side_effects.execute_update_status(actor, approval)
             target = self._decided_target(approval)
-            await self._run_service.resume_run(
+            resume_result = await self._run_service.resume_run(
                 run, build_application_graph(), state_override={"proposed_status": target}
             )
             if run.status == RunStatus.WAITING_APPROVAL:
+                if resume_result is None:
+                    raise RuntimeError("paused ApplicationRun did not return a checkpoint")
+                question_set = resume_result.checkpoint.checkpoint.get("question_set")
+                if isinstance(question_set, dict):
+                    application_run.question_set_json = question_set
+                    application_run.question_schema_version = str(
+                        question_set.get("schema_version", "v1")
+                    )
+                    await self._arun_repo.save_application_run(application_run)
                 # Reached the second approval gate (SHORTLISTED path): create the
                 # schedule approval and keep the slot occupied.
                 await self._approval_service.create_approval(
@@ -235,6 +251,8 @@ class ApplicationRunService:
                     },
                 )
             else:
+                application_run.completion_reason = "SUCCESS"
+                await self._arun_repo.save_application_run(application_run)
                 await self._app_repo.clear_active_run(
                     application_run.application_id, approval.application_run_id
                 )
@@ -247,7 +265,9 @@ class ApplicationRunService:
                     await self._side_effects.execute_create_schedule(
                         actor, approval, proposal=proposal
                     )
-                except AppError:
+                except AppError as error:
+                    if error.code != "SIDE_EFFECT_RETRYABLE_FAILURE":
+                        raise
                     # Retryable execution failure: the run is retryable-FAILED and
                     # the slot is freed so a new attempt can retry (§11.7/§11.8).
                     await self._app_repo.clear_active_run(
@@ -256,6 +276,8 @@ class ApplicationRunService:
                     return run
             await self._run_service.resume_run(run, build_application_graph())
             if run.status == RunStatus.COMPLETED:
+                application_run.completion_reason = "SUCCESS"
+                await self._arun_repo.save_application_run(application_run)
                 await self._app_repo.clear_active_run(
                     application_run.application_id, approval.application_run_id
                 )
@@ -297,6 +319,12 @@ class ApplicationRunService:
             raise app_error("APPLICATION_RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
         pending = await self._approval_service.get_pending_by_run(run_id)
         return agent_run, application_run, pending
+
+    async def get_approval_for_actor(
+        self, actor: Actor, approval_id: UUID
+    ) -> Approval:
+        """Expose an authorized approval read for the shared API transaction."""
+        return await self._approval_service.get_approval_for_actor(actor, approval_id)
 
     async def cancel_application_run(
         self, actor: Actor, run_id: UUID

@@ -42,8 +42,9 @@ class RuntimeResources:
             max_size_bytes=settings.max_file_size_mb * 1024 * 1024,
         )
         redis = build_redis_client(settings)
-        # MVP checkpointer: process-local. IMP-030 swaps in an AsyncPostgresSaver
-        # so a worker restart can still resume a WAITING_APPROVAL run (§17.2).
+        # Process-local fallback for services that never resume graphs. The
+        # ApplicationRun transaction wires a session-scoped SqlCheckpointer so a
+        # WAITING_APPROVAL run survives API/worker restarts (§17.2).
         # SSE fan-out uses Redis Pub/Sub; a lost publish is recovered by the SSE
         # heartbeat polling PostgreSQL (§13.2).
         return cls(

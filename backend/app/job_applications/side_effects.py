@@ -31,7 +31,7 @@ from backend.app.approvals.models import Approval, ApprovalActionType, ApprovalS
 from backend.app.approvals.service import ApprovalService
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import app_error
-from backend.app.interviews.models import Interview
+from backend.app.interviews.models import Interview, InterviewStatus
 from backend.app.interviews.repository import InterviewRepository
 from backend.app.interviews.schedule import ScheduleBackend
 from backend.app.interviews.schemas import ScheduleProposal
@@ -263,8 +263,8 @@ class ApplicationSideEffectService:
             run_id=approval.application_run_id,
             approval_id=approval.id,
             external_schedule_id=schedule.external_schedule_id,
-            schedule_json=proposal.model_dump(),
-            status="SCHEDULED",
+            schedule_json=proposal.model_dump(mode="json"),
+            status=InterviewStatus.SCHEDULED,
         )
         await self._interview_repo.save_interview(interview)
 

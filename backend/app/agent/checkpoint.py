@@ -4,7 +4,7 @@ This module defines the boundary the run engine uses to persist and restore
 graph state across an interrupt. The method names deliberately mirror
 LangGraph's ``BaseCheckpointSaver`` (``put`` / ``get`` / ``list``) so the
 in-memory implementation used for tests and local runs can be swapped for an
-``AsyncPostgresSaver`` in IMP-030 without touching ``RunEngine``.
+the session-scoped PostgreSQL implementation without touching ``RunEngine``.
 
 Design rule from detailed design §17.2: the checkpointer decides *where the
 graph resumes*, but the business tables are the final source of truth. The
@@ -17,7 +17,11 @@ from __future__ import annotations
 import uuid
 from typing import Any, Protocol
 
-from backend.app.agent.models import CheckpointTuple
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.app.agent.models import AgentCheckpoint, CheckpointTuple
 
 
 class Checkpointer(Protocol):
@@ -87,3 +91,71 @@ class InMemoryCheckpointer:
     async def list(self, thread_id: str, checkpoint_ns: str = "") -> list[CheckpointTuple]:
         found = self._store.get((thread_id, checkpoint_ns))
         return [found] if found is not None else []
+
+
+class SqlCheckpointer:
+    """Session-scoped PostgreSQL checkpointer with full ordered history."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def put(
+        self,
+        thread_id: str,
+        checkpoint_ns: str,
+        checkpoint_id: str,
+        parent_id: str | None,
+        checkpoint: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        self._session.add(
+            AgentCheckpoint(
+                thread_id=thread_id,
+                checkpoint_ns=checkpoint_ns,
+                checkpoint_id=checkpoint_id,
+                parent_id=parent_id,
+                checkpoint_json=jsonable_encoder(checkpoint),
+                metadata_json=jsonable_encoder(metadata),
+            )
+        )
+        await self._session.flush()
+
+    async def get(
+        self, thread_id: str, checkpoint_ns: str, checkpoint_id: str
+    ) -> CheckpointTuple | None:
+        statement = select(AgentCheckpoint).where(
+            AgentCheckpoint.thread_id == thread_id,
+            AgentCheckpoint.checkpoint_ns == checkpoint_ns,
+        )
+        if checkpoint_id:
+            statement = statement.where(
+                AgentCheckpoint.checkpoint_id == checkpoint_id
+            )
+        row = await self._session.scalar(
+            statement.order_by(AgentCheckpoint.id.desc()).limit(1)
+        )
+        return self._to_tuple(row) if row is not None else None
+
+    async def list(
+        self, thread_id: str, checkpoint_ns: str = ""
+    ) -> list[CheckpointTuple]:
+        rows = await self._session.scalars(
+            select(AgentCheckpoint)
+            .where(
+                AgentCheckpoint.thread_id == thread_id,
+                AgentCheckpoint.checkpoint_ns == checkpoint_ns,
+            )
+            .order_by(AgentCheckpoint.id.desc())
+        )
+        return [self._to_tuple(row) for row in rows]
+
+    @staticmethod
+    def _to_tuple(row: AgentCheckpoint) -> CheckpointTuple:
+        return CheckpointTuple(
+            thread_id=row.thread_id,
+            checkpoint_ns=row.checkpoint_ns,
+            checkpoint_id=row.checkpoint_id,
+            parent_id=row.parent_id,
+            checkpoint=dict(row.checkpoint_json),
+            metadata=dict(row.metadata_json),
+        )

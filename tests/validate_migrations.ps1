@@ -120,7 +120,7 @@ try {
             '-v', 'ON_ERROR_STOP=1', '-tAc', 'SELECT version_num FROM alembic_version;'
         ) | Select-Object -Last 1
     ).Trim()
-    if ($revision -ne '0009_link_applications') {
+    if ($revision -ne '0010_persist_workflow_tail') {
         throw "Unexpected Alembic revision: $revision"
     }
 
@@ -128,6 +128,7 @@ try {
 SELECT count(*)
 FROM (VALUES
     ('agent_events'),
+    ('agent_checkpoints'),
     ('agent_runs'),
     ('application_runs'),
     ('application_status_history'),
@@ -171,6 +172,18 @@ WHERE to_regclass('public.' || name) IS NULL;
     ).Trim()
     if ($applicationLinkConstraint -ne '1') {
         throw 'MatchRun candidates are not constrained to real JobApplications.'
+    }
+
+    $workflowTailConstraints = (
+        Invoke-Compose -Arguments @(
+            'exec', '--no-TTY', 'postgres',
+            'psql', '-U', 'resume_app', '-d', 'resume_copilot',
+            '-v', 'ON_ERROR_STOP=1', '-tAc',
+            "SELECT count(*) FROM pg_constraint WHERE conname IN ('fk_agent_checkpoints_thread','fk_application_runs_match_report','fk_application_status_history_run','fk_application_status_history_approval','fk_interviews_run','fk_interviews_approval_run');"
+        ) | Select-Object -Last 1
+    ).Trim()
+    if ($workflowTailConstraints -ne '6') {
+        throw "Workflow-tail persistence constraints are incomplete: $workflowTailConstraints/6"
     }
 
     $vectorDimension = (
@@ -219,7 +232,7 @@ WHERE to_regclass('public.' || name) IS NULL;
 
     Write-Output (
         'MIGRATION_VALIDATION_OK ' +
-        "revision=$revision tables=20 application_fk=present vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
+        "revision=$revision tables=21 workflow_fks=7 vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
     )
 }
 finally {

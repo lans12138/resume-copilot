@@ -12,7 +12,7 @@ def test_model_registry_exposes_every_migrated_table() -> None:
     metadata = get_model_metadata()
 
     assert frozenset(metadata.tables) == MIGRATED_MODEL_TABLES
-    assert len(MIGRATED_MODEL_TABLES) == 20
+    assert len(MIGRATED_MODEL_TABLES) == 21
 
 
 def test_candidate_name_width_matches_the_published_schema() -> None:
