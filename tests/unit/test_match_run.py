@@ -9,6 +9,7 @@ failure isolation, and "FAIL still scores".
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from uuid import UUID, uuid4
 
 from backend.app.agent.models import AgentEvent, AgentEventType, AgentRun, RunStatus
@@ -18,7 +19,11 @@ from backend.app.match_run.repository import (
     InMemoryMatchRunCandidateRepository,
     InMemoryMatchRunRepository,
 )
-from backend.app.match_run.service import MatchRunService
+from backend.app.match_run.service import (
+    ApplicationsProvider,
+    MatchRunService,
+    RankingsProvider,
+)
 from backend.app.retrieval.models import (
     FusedCandidate,
     HardRuleBundle,
@@ -26,6 +31,7 @@ from backend.app.retrieval.models import (
     RankingSnapshot,
     RetrievalConfig,
 )
+from backend.app.sse.notifier import Subscription
 
 JOB_VERSION_ID = uuid4()
 CONFIG = RetrievalConfig(
@@ -58,7 +64,7 @@ def _snapshot(fused: list[FusedCandidate]) -> RankingSnapshot:
     return RankingSnapshot(job_version_id=JOB_VERSION_ID, config=CONFIG, fused=fused)
 
 
-def _provider(snapshot: RankingSnapshot) -> object:
+def _provider(snapshot: RankingSnapshot) -> RankingsProvider:
     class _Provider:
         def __init__(self, snap: RankingSnapshot) -> None:
             self._snap = snap
@@ -70,14 +76,14 @@ def _provider(snapshot: RankingSnapshot) -> object:
 
 
 def _service(
-    snapshot: RankingSnapshot, applications: object | None = None
+    snapshot: RankingSnapshot, applications: ApplicationsProvider | None = None
 ) -> MatchRunService:
     return MatchRunService(
         run_repository=InMemoryAgentRunRepository(),
         match_run_repository=InMemoryMatchRunRepository(),
         candidate_repository=InMemoryMatchRunCandidateRepository(),
-        rankings=_provider(snapshot),  # type: ignore[arg-type]
-        applications=applications,  # type: ignore[arg-type]
+        rankings=_provider(snapshot),
+        applications=applications,
         concurrency=4,
     )
 
@@ -92,7 +98,7 @@ class _RecordingNotifier:
     def __init__(self) -> None:
         self.published: list[tuple[UUID, int]] = []
 
-    def subscribe(self, run_id: UUID) -> object:
+    def subscribe(self, run_id: UUID) -> Subscription:
         return _NoOpSubscription()
 
     async def publish(self, run_id: UUID, sequence: int) -> None:
@@ -168,10 +174,10 @@ async def _match_run_resolves_durable_application_ids() -> None:
 
     class _Applications:
         requested_job_id: UUID | None = None
-        requested_profile_ids: list[UUID] = []
+        requested_profile_ids: Sequence[UUID] = []
 
         async def get_or_create(
-            self, *, job_id: UUID, profile_ids: list[UUID]
+            self, *, job_id: UUID, profile_ids: Sequence[UUID]
         ) -> dict[UUID, UUID]:
             self.requested_job_id = job_id
             self.requested_profile_ids = profile_ids
