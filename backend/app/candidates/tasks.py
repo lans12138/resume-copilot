@@ -6,6 +6,15 @@ database (a chunk already embedded with the same model+version is skipped), so
 Celery at-least-once redelivery is safe. Transient failures (DB/storage) use
 exponential backoff with jitter; ``EmbeddingDimensionError`` is permanent and
 must not be retried.
+
+Async note: the whole database/embedding workflow runs inside a *single* event
+loop (a single ``asyncio.run``). The async SQLAlchemy engine and the redis client
+are both loop-bound, and Celery's prefork worker forks child processes after
+module import — so we must not share a cached ``RuntimeResources`` across tasks,
+nor split the work across several ``asyncio.run`` calls (which would attach the
+connection to different loops and raise "attached to a different loop" /
+"cannot use Connection.transaction() in a manually started transaction"). We
+therefore build resources per task invocation and dispose them in the same loop.
 """
 from __future__ import annotations
 
@@ -21,15 +30,6 @@ from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.settings import get_settings
 from backend.app.infrastructure.embedding import EmbeddingDimensionError, build_embedding_gateway
 from backend.app.infrastructure.runtime import RuntimeResources
-
-_cached_resources: RuntimeResources | None = None
-
-
-def _resources() -> RuntimeResources:
-    global _cached_resources
-    if _cached_resources is None:
-        _cached_resources = RuntimeResources.build(get_settings())
-    return _cached_resources
 
 
 def _build_service(
@@ -47,14 +47,15 @@ def _build_service(
     )
 
 
-def _run_embeddings(profile_id: str) -> dict[str, Any]:
-    resources = _resources()
+async def _run_embeddings_async(
+    resources: RuntimeResources, profile_id: str
+) -> dict[str, Any]:
     session = resources.session_factory()
     repo = SqlEvidenceChunkRepository(session)
     service = _build_service(resources, repo)
     try:
-        result = asyncio.run(service.generate_for_profile(UUID(profile_id)))
-        asyncio.run(repo.commit())
+        result = await service.generate_for_profile(UUID(profile_id))
+        await repo.commit()
         return {
             "status": "ok",
             "profile_id": profile_id,
@@ -70,7 +71,15 @@ def _run_embeddings(profile_id: str) -> dict[str, Any]:
             "expected": error.expected,
         }
     finally:
-        asyncio.run(repo.close())
+        await repo.close()
+        # Tear down the loop-bound engine/redis within the same event loop so no
+        # loop-bound connection survives into the next task's loop.
+        await resources.close()
+
+
+def _run_embeddings(profile_id: str) -> dict[str, Any]:
+    resources = RuntimeResources.build(get_settings())
+    return asyncio.run(_run_embeddings_async(resources, profile_id))
 
 
 @shared_task(name="embeddings.generate_chunks", bind=True)  # type: ignore[untyped-decorator]
