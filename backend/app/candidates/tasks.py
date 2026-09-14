@@ -14,12 +14,11 @@ import random
 from typing import Any
 from uuid import UUID
 
-from celery import Task  # type: ignore[import-untyped]
+from celery import Task, shared_task  # type: ignore[import-untyped]
 
 from backend.app.candidates.embedding_service import EmbeddingService
 from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.settings import get_settings
-from backend.app.infrastructure.celery import app
 from backend.app.infrastructure.embedding import EmbeddingDimensionError, build_embedding_gateway
 from backend.app.infrastructure.runtime import RuntimeResources
 
@@ -74,7 +73,7 @@ def _run_embeddings(profile_id: str) -> dict[str, Any]:
         asyncio.run(repo.close())
 
 
-@app.task(name="embeddings.generate_chunks", bind=True)  # type: ignore[untyped-decorator]
+@shared_task(name="embeddings.generate_chunks", bind=True)  # type: ignore[untyped-decorator]
 def generate_chunk_embeddings(self: Task, profile_id: str) -> dict[str, Any]:
     try:
         return _run_embeddings(profile_id)

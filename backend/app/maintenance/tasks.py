@@ -20,7 +20,7 @@ import asyncio
 from datetime import UTC, datetime
 from uuid import UUID
 
-from celery import Task  # type: ignore[import-untyped]
+from celery import Task, shared_task  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.agent.repository import SqlAgentRunRepository
@@ -29,7 +29,6 @@ from backend.app.approvals.repository import SqlApprovalRepository
 from backend.app.approvals.service import ApprovalService
 from backend.app.auth.tokens import Actor
 from backend.app.core.settings import get_settings
-from backend.app.infrastructure.celery import app
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.job_applications.repository import (
     SqlApplicationRunRepository,
@@ -71,7 +70,7 @@ async def _expire(
     return await maintenance.expire_pending_approvals(before)
 
 
-@app.task(name="maintenance.expire_approvals", bind=True)  # type: ignore[untyped-decorator]
+@shared_task(name="maintenance.expire_approvals", bind=True)  # type: ignore[untyped-decorator]
 def expire_approvals(self: Task, before_iso: str | None = None) -> dict[str, object]:
     """Promote timed-out PENDING approvals to EXPIRED (§11.8)."""
     resources = RuntimeResources.build(get_settings())

@@ -12,7 +12,7 @@ import random
 from collections.abc import Callable
 from uuid import UUID
 
-from celery import Task  # type: ignore[import-untyped]
+from celery import Task, shared_task  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.core.settings import get_settings
@@ -98,14 +98,14 @@ async def _mark_permanent_failure(
     await repository.close()
 
 
-@app.task(name="documents.parse", bind=True)  # type: ignore[untyped-decorator]
+@shared_task(name="documents.parse", bind=True)  # type: ignore[untyped-decorator]
 def parse_document(
     self: Task, document_id: str, *, attempt: int, parser_version: str
 ) -> str | None:
     return _run_parse(self, document_id, attempt=attempt, parser_version=parser_version)
 
 
-@app.task(name="documents.retry_parse", bind=True)  # type: ignore[untyped-decorator]
+@shared_task(name="documents.retry_parse", bind=True)  # type: ignore[untyped-decorator]
 def retry_parse_document(
     self: Task, document_id: str, *, attempt: int, parser_version: str
 ) -> str | None:
