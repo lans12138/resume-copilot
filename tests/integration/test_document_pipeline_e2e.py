@@ -5,11 +5,14 @@ exercised, not stubbed). Skipped unless ``DATABASE_URL`` points at a real
 PostgreSQL, which keeps the hermetic unit suite clean; the compose-backed probe
 ``tests/validate_document_pipeline.ps1`` runs it for real in CI.
 
-Why the Celery tasks are invoked via ``celery_app.tasks[...].run(...)`` instead of
-a live worker: the probe starts only postgres+redis, so ``.run()`` executes the
-exact worker code path (single event loop, per-invocation ``RuntimeResources``)
-without racing a second consumer. At-least-once redelivery is covered by calling
-the same task twice and asserting the database refuses a second side effect.
+Why the Celery tasks are invoked via ``celery_app.tasks[...].run(...)`` (handed to a
+worker thread by ``_run_task``) instead of a live worker: the probe starts only
+postgres+redis, so ``.run()`` executes the exact worker code path (single event
+loop, per-invocation ``RuntimeResources``) without racing a second consumer. It
+must run off-loop, because the task bodies call ``asyncio.run`` themselves — just
+as a prefork worker would, in a loop-free process. At-least-once redelivery is
+covered by calling the same task twice and asserting the database refuses a
+second side effect.
 
 Each ``def test_`` drives the async scenario through ``asyncio.run`` — the
 project convention, since no pytest-asyncio plugin is configured.
@@ -21,6 +24,7 @@ import asyncio
 import io
 import os
 import uuid
+from typing import Any
 
 import pytest
 from docx import Document
@@ -130,6 +134,19 @@ async def _upload(resources: RuntimeResources, actor: Actor, payload: bytes) -> 
     return document_id
 
 
+async def _run_task(task: object, *args: object, **kwargs: object) -> Any:
+    """Run a Celery task body off-loop, like a real prefork worker process does.
+
+    The task wrappers end in ``asyncio.run(...)``, so calling them directly from
+    the running test loop raises "asyncio.run() cannot be called from a running
+    event loop". A worker consumes deliveries in its own process, so we hand each
+    invocation a worker thread with a fresh event loop; that also matches the
+    per-invocation ``RuntimeResources`` the real worker builds.
+    """
+    run = task.run  # type: ignore[attr-defined]
+    return await asyncio.to_thread(run, *args, **kwargs)
+
+
 async def _scalar(resources: RuntimeResources, sql: str, **params: object) -> object:
     async with resources.session_factory() as session:
         return await session.scalar(text(sql), params)
@@ -221,8 +238,8 @@ async def _run_pipeline() -> None:
         document_id = await _upload(resources, actor, _make_resume_docx())
 
         # 2. Parse (real parser + storage + PostgreSQL).
-        status = parse_task.run(
-            str(document_id), attempt=1, parser_version=parser_version
+        status = await _run_task(
+            parse_task, str(document_id), attempt=1, parser_version=parser_version
         )
         assert status == DocumentStatus.REVIEW_REQUIRED.value
         assert (
@@ -231,13 +248,13 @@ async def _run_pipeline() -> None:
         )
 
         # A duplicate delivery of the same attempt is a no-op.
-        replay = parse_task.run(
-            str(document_id), attempt=1, parser_version=parser_version
+        replay = await _run_task(
+            parse_task, str(document_id), attempt=1, parser_version=parser_version
         )
         assert replay == DocumentStatus.REVIEW_REQUIRED.value
 
         # 3. Extraction turns the stored blocks into a REVIEW_REQUIRED draft.
-        extracted = extract_task.run(str(document_id))
+        extracted = await _run_task(extract_task, str(document_id))
         assert extracted["status"] == "ok"
         profile_id = uuid.UUID(extracted["profile_id"])
         assert await _count(
@@ -256,7 +273,7 @@ async def _run_pipeline() -> None:
         ) == 1
 
         # At-least-once: re-delivery must not create a second draft.
-        duplicate = extract_task.run(str(document_id))
+        duplicate = await _run_task(extract_task, str(document_id))
         assert duplicate["status"] == "skipped"
         assert duplicate["reason"] == "already_extracted"
         assert await _count(
@@ -281,7 +298,7 @@ async def _run_pipeline() -> None:
         assert await _document_status(resources, document_id) == DocumentStatus.READY.value
 
         # 6. Embedding fills the vector for the pinned chunk.
-        embedded = embed_task.run(str(profile_id))
+        embedded = await _run_task(embed_task, str(profile_id))
         assert embedded["status"] == "ok"
         assert embedded["generated"] == 1
         assert await _count(
@@ -292,7 +309,7 @@ async def _run_pipeline() -> None:
         ) == 1
 
         # Re-delivery skips the already-embedded chunk (no second side effect).
-        replayed = embed_task.run(str(profile_id))
+        replayed = await _run_task(embed_task, str(profile_id))
         assert replayed["status"] == "ok"
         assert replayed["generated"] == 0
         assert await _count(
@@ -303,8 +320,8 @@ async def _run_pipeline() -> None:
         ) == 1
 
         # A late parse delivery must not drag a confirmed document back.
-        late = parse_task.run(
-            str(document_id), attempt=1, parser_version=parser_version
+        late = await _run_task(
+            parse_task, str(document_id), attempt=1, parser_version=parser_version
         )
         assert late == DocumentStatus.READY.value
         assert await _document_status(resources, document_id) == DocumentStatus.READY.value
