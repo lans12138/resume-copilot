@@ -17,6 +17,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -85,8 +86,20 @@ class CandidateProfile(Base):
     candidate_id: Mapped[UUID] = mapped_column(ForeignKey("candidates.id"), nullable=False)
     document_id: Mapped[UUID] = mapped_column(ForeignKey("resume_documents.id"), nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Same rationale as ``resume_documents.status``: a bare String column would
+    # return a raw str, silently defeating the ``is`` checks in
+    # ``ProfileReviewService`` (confirmation would always answer 409) and raising
+    # AttributeError on ``.value``. ``native_enum=False`` keeps the VARCHAR(32)
+    # storage the existing CHECK constraint and index expect.
     status: Mapped[CandidateProfileStatus] = mapped_column(
-        String(32), nullable=False, default=CandidateProfileStatus.DRAFT
+        Enum(
+            CandidateProfileStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        nullable=False,
+        default=CandidateProfileStatus.DRAFT,
     )
     profile_json: Mapped[dict[str, object]] = mapped_column(JSONB, nullable=False)
     normalized_skills: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)

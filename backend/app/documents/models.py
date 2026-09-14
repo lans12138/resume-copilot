@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -56,7 +57,20 @@ class ResumeDocument(Base):
     media_type: Mapped[str] = mapped_column(String(128), nullable=False)
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[DocumentStatus] = mapped_column(String(32), nullable=False)
+    # ``native_enum=False`` stores plain VARCHAR(32) (the CHECK constraint above
+    # still pins the vocabulary) but makes SQLAlchemy hand back the enum member
+    # instead of a raw str — which ``tasks.py`` and every ``.value`` caller rely
+    # on. A bare ``String`` column silently returned ``str``, defeating
+    # ``is`` comparisons and raising AttributeError on ``.value``.
+    status: Mapped[DocumentStatus] = mapped_column(
+        Enum(
+            DocumentStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=32,
+        ),
+        nullable=False,
+    )
     parser_version: Mapped[str | None] = mapped_column(String(64))
     attempt: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     retryable: Mapped[bool] = mapped_column(
