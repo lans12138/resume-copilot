@@ -33,7 +33,7 @@ from backend.app.agent.models import (
     RunStatus,
     RunType,
 )
-from backend.app.agent.repository import InMemoryAgentRunRepository
+from backend.app.agent.repository import AgentRunRepository, InMemoryAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
@@ -328,7 +328,7 @@ def test_redis_subscription_wait_returns_within_timeout_when_pubsub_silent() -> 
         async def subscribe(self, channel: str) -> None:  # pragma: no cover - exercised
             return None
 
-        async def get_message(self, *, ignore_subscribe_messages: bool = False):
+        async def get_message(self, *, ignore_subscribe_messages: bool = False) -> Any:
             # A notify that never arrives: block indefinitely to mimic the e2e hang.
             await asyncio.sleep(3600)
 
@@ -336,7 +336,7 @@ def test_redis_subscription_wait_returns_within_timeout_when_pubsub_silent() -> 
         def pubsub(self) -> _BlockingPubSub:
             return _BlockingPubSub()
 
-    sub = _RedisSubscription(_FakeRedis(), "run:abc")
+    sub = _RedisSubscription(_FakeRedis(), "run:abc")  # type: ignore[arg-type]
     # wait must return inside the bound; the outer wait_for fails the test if it does not.
     asyncio.run(asyncio.wait_for(sub.wait(0.2), timeout=1.0))
 
@@ -344,7 +344,7 @@ def test_redis_subscription_wait_returns_within_timeout_when_pubsub_silent() -> 
 # --------------------------------------------------------------------------- #
 # Frozen-snapshot simulation: proves the FIN-005 SSE regression fix.
 # --------------------------------------------------------------------------- #
-class _SnapshotAgentRunRepository:
+class _SnapshotAgentRunRepository(AgentRunRepository):
     """Simulates PostgreSQL READ COMMITTED over a long-lived session.
 
     A background writer mutates the *committed* state; the reader only observes
@@ -355,7 +355,7 @@ class _SnapshotAgentRunRepository:
     """
 
     def __init__(self) -> None:
-        self._config: dict[UUID, dict] = {}
+        self._config: dict[UUID, dict[str, Any]] = {}
         self._committed_status: dict[UUID, RunStatus] = {}
         self._committed_events: dict[UUID, list[AgentEvent]] = {}
         self._snapshot_status: dict[UUID, RunStatus] = {}
@@ -379,7 +379,7 @@ class _SnapshotAgentRunRepository:
             self._snapshot_events[run_id] = list(self._committed_events.get(run_id, []))
             self._seen.add(run_id)
 
-    async def get_run(self, run_id: UUID):
+    async def get_run(self, run_id: UUID) -> Any:
         if run_id not in self._config:
             return None
         self._advance(run_id)
@@ -388,7 +388,9 @@ class _SnapshotAgentRunRepository:
             config_snapshot_json=self._config[run_id],
         )
 
-    async def list_events_after(self, run_id: UUID, last_sequence: int, limit: int):
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
         self._advance(run_id)
         ordered = sorted(
             (e for e in self._snapshot_events.get(run_id, []) if e.sequence > last_sequence),
@@ -396,11 +398,37 @@ class _SnapshotAgentRunRepository:
         )
         return ordered[:limit]
 
-    async def get_event_by_sequence(self, run_id: UUID, sequence: int):
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
         for event in self._committed_events.get(run_id, []):
             if event.sequence == sequence:
                 return event
         return None
+
+    async def save_run(self, run: AgentRun) -> None:
+        return None
+
+    async def append_event(
+        self,
+        *,
+        run_id: UUID,
+        run_type: RunType,
+        event_type: AgentEventType,
+        node: str | None,
+        status: str,
+        message_key: str,
+        safe_payload: dict[str, Any],
+    ) -> AgentEvent:
+        raise NotImplementedError
+
+    async def set_status(
+        self, run_id: UUID, status: RunStatus, *, finished: bool = False
+    ) -> None:
+        return None
+
+    async def list_events(self, run_id: UUID) -> list[AgentEvent]:
+        return []
 
     async def refresh_for_poll(self) -> None:
         for run_id in list(self._committed_status):
