@@ -125,7 +125,12 @@ try {
     $deadline = (Get-Date).AddSeconds(80)
     while ((Get-Date) -lt $deadline) {
         $log = (Invoke-Compose -Arguments @('logs', 'scheduler') | Out-String)
-        if ($log -match 'Sending due task maintenance\.expire_approvals') {
+        # Celery beat logs the dispatch as:
+        #   "Scheduler: Sending due task <schedule-key> (<task-name>)"
+        # i.e. "Sending due task expire-pending-approvals (maintenance.expire_approvals)".
+        # The task name appears in parentheses, not immediately after "Sending due task",
+        # so match with a wildcard between the two anchors.
+        if ($log -match 'Sending due task.*maintenance\.expire_approvals') {
             $beatFired = $true
             break
         }
