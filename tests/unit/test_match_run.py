@@ -86,6 +86,27 @@ def _application_ids(fused: list[FusedCandidate]) -> dict[UUID, UUID]:
     return {c.candidate_profile_id: c.candidate_profile_id for c in fused}
 
 
+class _RecordingNotifier:
+    """Captures publish(run_id, sequence) calls so tests can pin the SSE contract."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[UUID, int]] = []
+
+    def subscribe(self, run_id: UUID) -> object:
+        return _NoOpSubscription()
+
+    async def publish(self, run_id: UUID, sequence: int) -> None:
+        self.published.append((run_id, sequence))
+
+
+class _NoOpSubscription:
+    async def wait(self, timeout: float) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
 def _run(
     fused: list[FusedCandidate],
     *,
@@ -283,6 +304,57 @@ def _create(
             rule_version="v1",
         )
     )
+
+
+def test_executing_a_run_publishes_every_event_to_the_notifier() -> None:
+    """FIN-005 fix: the worker's graph runs off the request path, so the browser
+    learns the run finished only through the SSE notifier. ``MatchRunService`` owns
+    the event appends now (it no longer routes through ``RunService``), so it must
+    publish each sequence itself — otherwise the live stream never wakes and the
+    ranking stays empty until the heartbeat recovers it.
+    """
+    notifier = _RecordingNotifier()
+    fused = [_candidate(uuid4(), 1, HardRuleOutcome.PASS)]
+    snapshot = _snapshot(fused)
+    service = MatchRunService(
+        run_repository=InMemoryAgentRunRepository(),
+        match_run_repository=InMemoryMatchRunRepository(),
+        candidate_repository=InMemoryMatchRunCandidateRepository(),
+        rankings=_provider(snapshot),
+        notifier=notifier,
+        concurrency=1,
+    )
+    run, match_run = _create(service)
+    # create_match_run appends RUN_CREATED through the same path.
+    assert len(notifier.published) >= 1
+
+    asyncio.run(
+        service.execute_match_run(
+            run=run, match_run=match_run, application_ids=_application_ids(fused)
+        )
+    )
+    # RUN_CREATED + node events + RUN_COMPLETED were all published.
+    assert len(notifier.published) >= 2
+    assert all(rid == run.id for rid, _ in notifier.published)
+    # The highest published sequence is the run's last assigned event.
+    sequences = [seq for _, seq in notifier.published]
+    assert max(sequences) == run.next_event_sequence - 1
+    assert any(seq >= 0 for seq in sequences)
+
+
+def test_executing_a_run_without_a_notifier_is_silent() -> None:
+    """No notifier is the default wiring; it must not raise or emit."""
+    profile = uuid4()
+    service = _service(_snapshot([_candidate(profile, 1, HardRuleOutcome.PASS)]))
+    run, match_run = _create(service)
+    asyncio.run(
+        service.execute_match_run(
+            run=run,
+            match_run=match_run,
+            application_ids={profile: uuid4()},
+        )
+    )
+    assert run.status is RunStatus.COMPLETED
 
 
 def test_create_match_run_leaves_the_run_for_a_worker_to_claim() -> None:

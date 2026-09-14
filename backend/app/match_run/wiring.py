@@ -20,9 +20,14 @@ from backend.app.match_run.repository import (
     SqlMatchRunRepository,
 )
 from backend.app.match_run.service import MatchRunService
+from backend.app.sse.notifier import EventNotifier
 
 
-def build_match_run_service(session: AsyncSession, settings: Settings) -> MatchRunService:
+def build_match_run_service(
+    session: AsyncSession,
+    settings: Settings,
+    notifier: EventNotifier | None = None,
+) -> MatchRunService:
     """Assemble the MatchRun service + repositories over one transaction."""
     return MatchRunService(
         run_repository=SqlAgentRunRepository(session),
@@ -33,5 +38,6 @@ def build_match_run_service(session: AsyncSession, settings: Settings) -> MatchR
         # AsyncSession cannot be flushed concurrently. The service keeps its
         # bounded fan-out seam for worker-scoped repositories, while one
         # transaction processes candidates one at a time.
+        notifier=notifier,
         concurrency=1,
     )

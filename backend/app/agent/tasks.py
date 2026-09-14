@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.agent.enqueuer import ExecutionIntent as ExecutionIntent
 from backend.app.agent.models import AgentRun, RunStatus, RunType, is_terminal
+from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.settings import get_settings
 from backend.app.infrastructure.runtime import RuntimeResources
@@ -157,7 +158,9 @@ async def _execute_match_run_async(
             await session.rollback()
             return {"status": "skipped", "reason": "match_run_not_found", "run_id": str(run_id)}
 
-        service = build_match_run_service(session, get_settings())
+        service = build_match_run_service(
+            session, get_settings(), notifier=resources.event_notifier
+        )
         await service.execute_match_run(
             run=run,
             match_run=match_run,
@@ -168,6 +171,18 @@ async def _execute_match_run_async(
         # the run has reached its terminal state, so a duplicate delivery can never
         # observe a half-finished run, and a crash rolls back to CREATED.
         await session.commit()
+        # Publish *after* the commit (FIN-005 fix): the per-event publishes during
+        # the pass went out while the row was still uncommitted, so a live SSE
+        # connection that woke on one of them re-read PostgreSQL (READ COMMITTED)
+        # and saw nothing, then fell back to the heartbeat — up to a full
+        # heartbeat period late. A publish emitted once the data is durable wakes
+        # the subscriber with the terminal state already visible, so the browser
+        # refreshes its ranking within a single Pub/Sub round-trip instead of
+        # waiting out the heartbeat.
+        agent_repo = SqlAgentRunRepository(session)
+        published = await agent_repo.list_events(run_id)
+        final_sequence = max((event.sequence for event in published), default=-1)
+        await resources.event_notifier.publish(run_id, final_sequence)
         return {"status": "ok", "run_id": str(run_id), "final_status": run.status.value}
     finally:
         await session.close()

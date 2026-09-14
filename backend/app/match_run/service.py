@@ -52,6 +52,7 @@ from backend.app.match_run.repository import (
 )
 from backend.app.reports.service import EvidenceProvider, ReportService
 from backend.app.retrieval.models import FusedCandidate, HardRuleBundle, RankingSnapshot
+from backend.app.sse.notifier import EventNotifier
 
 
 class RankingsProvider(Protocol):
@@ -79,6 +80,7 @@ class MatchRunService:
         rankings: RankingsProvider,
         applications: ApplicationsProvider | None = None,
         *,
+        notifier: EventNotifier | None = None,
         concurrency: int = 4,
     ) -> None:
         self._runs = run_repository
@@ -86,6 +88,14 @@ class MatchRunService:
         self._candidates = candidate_repository
         self._rankings = rankings
         self._applications = applications
+        # Optional SSE fan-out: every committed event publishes its run_id +
+        # sequence so a live SSE connection wakes and replays (IMP-025, §13.2).
+        # The API path used to append events through RunService (which publishes);
+        # now that FIN-005 runs the graph in a worker, this service owns the
+        # append and must publish itself or the browser never learns the run
+        # finished. A lost publish is recovered by the SSE heartbeat, but only
+        # after a full heartbeat period — too slow for the UI's progress refresh.
+        self._notifier = notifier
         self._concurrency = max(1, concurrency)
 
     async def create_match_run(
@@ -447,7 +457,7 @@ class MatchRunService:
         message_key: str,
         safe_payload: dict[str, object],
     ) -> AgentEvent:
-        return await self._runs.append_event(
+        event = await self._runs.append_event(
             run_id=run.id,
             run_type=run.run_type,
             event_type=event_type,
@@ -456,6 +466,9 @@ class MatchRunService:
             message_key=message_key,
             safe_payload=safe_payload,
         )
+        if self._notifier is not None:
+            await self._notifier.publish(run.id, event.sequence)
+        return event
 
 
 def _hard_rule_json(bundle: HardRuleBundle | None) -> dict[str, object]:

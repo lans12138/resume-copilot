@@ -88,7 +88,7 @@ async def create_match_run(
         job = await JobService(session).get_authorized(actor, job_id)
         if job.current_version_id is None:
             raise app_error("JOB_NO_VERSION", http_status=409, safe_message="岗位尚无可用版本")
-        service = build_match_run_service(session, settings)
+        service = build_match_run_service(session, settings, notifier=resources.event_notifier)
         run, _match_run = await service.create_match_run(
             job_id=job.id,
             job_version_id=job.current_version_id,
@@ -234,6 +234,13 @@ async def cancel_match_run(
         match_run = await SqlMatchRunRepository(session).get_match_run(run_id)
         job_id = match_run.job_id if match_run is not None else run_id
         await session.commit()
+        # Publish after the commit: cancel_run's per-event publish went out before
+        # the row was durable, so a live SSE connection that woke on it re-read and
+        # saw nothing, then waited out the heartbeat. A post-commit publish wakes it
+        # with the CANCELLED state already visible (§13.2).
+        published = await agent_repo.list_events(run_id)
+        final_sequence = max((event.sequence for event in published), default=-1)
+        await resources.event_notifier.publish(run_id, final_sequence)
         result = MatchRunAccepted(run_id=agent_run.id, job_id=job_id, status=agent_run.status.value)
         await guard.complete(202, result.model_dump(mode="json"), resource_id=str(run_id))
         return result
