@@ -167,7 +167,8 @@ services:
     restart: unless-stopped
     command:
       - python
-      - backend/worker.py
+      - -m
+      - backend.worker
     environment: *backend-environment
     volumes:
       - resume_storage:/data/resumes
@@ -191,7 +192,8 @@ services:
     restart: unless-stopped
     command:
       - python
-      - backend/scheduler.py
+      - -m
+      - backend.scheduler
     environment: *backend-environment
     networks:
       - backend
