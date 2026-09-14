@@ -65,19 +65,22 @@ export function MatchRunPage() {
     },
   })
 
+  // When the run reaches a terminal state the reports may have just been
+  // committed; force one refetch so the evidence panel shows them even if the
+  // last poll tick landed before the commit (FIN-005 convergence backstop).
+  // Declared before any early return so it obeys the Rules of Hooks.
+  useEffect(() => {
+    const s = runQuery.data?.status
+    const t = s === "COMPLETED" || s === "FAILED" || s === "CANCELLED"
+    if (t) reportsQuery.refetch()
+  }, [runQuery.data?.status, reportsQuery.refetch])
+
   if (runQuery.isLoading) return <LoadingState label="正在读取分析流程" />
   if (runQuery.error) return <section><Link className="back-link" to="/jobs">← 返回岗位列表</Link><ErrorNotice error={runQuery.error} /></section>
   const run = runQuery.data
   if (!run) return null
   const status = run.status as RunStatus
   const terminal = status === "COMPLETED" || status === "FAILED" || status === "CANCELLED"
-
-  // When the run reaches a terminal state the reports may have just been
-  // committed; force one refetch so the evidence panel shows them even if the
-  // last poll tick landed before the commit (FIN-005 convergence backstop).
-  useEffect(() => {
-    if (terminal) reportsQuery.refetch()
-  }, [terminal, reportsQuery.refetch])
 
   return (
     <section>
