@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom"
 import type { CandidateRanking } from "../api/types"
 import { HardRuleBadge } from "./HardRuleBadge"
 
@@ -6,7 +7,7 @@ function channelCell(rank: number | null, score: number | null) {
   return <span>#{rank} · {score.toFixed(3)}</span>
 }
 
-export function CandidateTable({ items }: { items: CandidateRanking[] }) {
+export function CandidateTable({ items, jobId }: { items: CandidateRanking[]; jobId?: string }) {
   return (
     <table className="ranking-table">
       <thead>
@@ -25,7 +26,15 @@ export function CandidateTable({ items }: { items: CandidateRanking[] }) {
           <tr key={candidate.candidate_profile_id}>
             <td>{candidate.snapshot_order}</td>
             <td>
-              <strong>{candidate.display_name || "候选人"}</strong>
+              {/* The job travels in the URL: the profile and its evidence are read
+                  under job-level authorization, so the link must not be ambiguous. */}
+              {jobId ? (
+                <Link to={`/candidates/${candidate.candidate_profile_id}?job=${jobId}`}>
+                  <strong>{candidate.display_name || "候选人"}</strong>
+                </Link>
+              ) : (
+                <strong>{candidate.display_name || "候选人"}</strong>
+              )}
               <small>{candidate.normalized_skills.slice(0, 4).join("、")}</small>
             </td>
             <td>{candidate.rrf_score.toFixed(4)}</td>

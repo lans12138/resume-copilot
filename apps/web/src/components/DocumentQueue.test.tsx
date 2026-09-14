@@ -1,12 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import type { ReactElement } from "react"
+import { MemoryRouter } from "react-router-dom"
 import { DocumentQueue, UploadOutcomeList } from "./DocumentQueue"
 import type { DocumentSummary } from "../api/types"
 
 // vitest runs without globals, so React Testing Library's auto-cleanup is not
 // registered; without this the renders of previous cases leak into the next one.
 afterEach(() => cleanup())
+
+/** The queue links each row to the document detail route, so it needs a router. */
+function renderQueue(ui: ReactElement) {
+  return render(<MemoryRouter>{ui}</MemoryRouter>)
+}
 
 function documentSummary(overrides: Partial<DocumentSummary> = {}): DocumentSummary {
   return {
@@ -30,12 +37,12 @@ function documentSummary(overrides: Partial<DocumentSummary> = {}): DocumentSumm
 
 describe("DocumentQueue", () => {
   it("shows an empty state before anything is uploaded", () => {
-    render(<DocumentQueue documents={[]} onRetry={() => {}} />)
+    renderQueue(<DocumentQueue documents={[]} onRetry={() => {}} />)
     expect(screen.getByText("还没有简历文件")).toBeInTheDocument()
   })
 
   it("renders the status, attempt count and size of each document", () => {
-    render(<DocumentQueue documents={[documentSummary({ status: "PARSING", attempt: 2 })]} onRetry={() => {}} />)
+    renderQueue(<DocumentQueue documents={[documentSummary({ status: "PARSING", attempt: 2 })]} onRetry={() => {}} />)
     expect(screen.getByText("resume.docx")).toBeInTheDocument()
     expect(screen.getByText("解析中")).toBeInTheDocument()
     expect(screen.getByText("第 2 次")).toBeInTheDocument()
@@ -43,7 +50,7 @@ describe("DocumentQueue", () => {
   })
 
   it("shows the failure category and the backend's safe message separately", () => {
-    render(
+    renderQueue(
       <DocumentQueue
         documents={[
           documentSummary({
@@ -61,7 +68,7 @@ describe("DocumentQueue", () => {
   })
 
   it("offers a retry only when the backend flagged the failure as retryable", () => {
-    render(
+    renderQueue(
       <DocumentQueue
         documents={[
           documentSummary({ status: "FAILED", error_code: "STORAGE_UNAVAILABLE", retryable: true }),
@@ -79,15 +86,45 @@ describe("DocumentQueue", () => {
     expect(screen.getAllByRole("button", { name: "重试解析" })).toHaveLength(1)
   })
 
+  it("links a row to its detail page and only offers review for a draft", () => {
+    renderQueue(
+      <DocumentQueue
+        documents={[
+          documentSummary({ status: "REVIEW_REQUIRED" }),
+          documentSummary({
+            id: "44444444-4444-4444-8444-444444444444",
+            original_filename: "ready.pdf",
+            status: "READY",
+          }),
+        ]}
+        onRetry={() => {}}
+      />,
+    )
+
+    expect(screen.getByRole("link", { name: "resume.docx" })).toHaveAttribute(
+      "href",
+      "/documents/11111111-1111-4111-8111-111111111111",
+    )
+    // A READY document has nothing left to review; re-opening the draft must not be
+    // offered as if the review were still pending.
+    expect(screen.getAllByRole("link", { name: "去校对" })).toHaveLength(1)
+    expect(screen.getByRole("link", { name: "去校对" })).toHaveAttribute(
+      "href",
+      "/documents/11111111-1111-4111-8111-111111111111/review",
+    )
+  })
+
   it("invokes the retry callback with the document id and disables the button while pending", async () => {
     const onRetry = vi.fn()
     const target = documentSummary({ status: "FAILED", error_code: "STORAGE_UNAVAILABLE", retryable: true })
-    const { rerender } = render(<DocumentQueue documents={[target]} onRetry={onRetry} />)
+    const { rerender } = renderQueue(<DocumentQueue documents={[target]} onRetry={onRetry} />)
 
     await userEvent.click(screen.getByRole("button", { name: "重试解析" }))
     expect(onRetry).toHaveBeenCalledWith(target.id)
 
-    rerender(<DocumentQueue documents={[target]} onRetry={onRetry} retryingId={target.id} />)
+    rerender(
+      <MemoryRouter><DocumentQueue documents={[target]} onRetry={onRetry} retryingId={target.id} /></MemoryRouter>,
+    )
     const pending = screen.getByRole("button", { name: "重试中…" })
     expect(pending).toBeDisabled()
   })

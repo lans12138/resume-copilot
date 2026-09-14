@@ -3,6 +3,9 @@ import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, u
 import { useState } from "react"
 import { useAppStore } from "./state/session"
 import { CandidatesPage } from "./pages/CandidatesPage"
+import { CandidateDetailPage } from "./pages/CandidateDetailPage"
+import { DocumentDetailPage } from "./pages/DocumentDetailPage"
+import { DocumentReviewPage } from "./pages/DocumentReviewPage"
 import { DocumentsPage } from "./pages/DocumentsPage"
 import { JobDetailPage } from "./pages/JobDetailPage"
 import { JobsPage } from "./pages/JobsPage"
@@ -52,7 +55,10 @@ export function AppRoutes() {
       <Route path="/approvals/:approvalId" element={<ApprovalPage />} />
       <Route path="/interviews/:interviewId" element={<InterviewPage />} />
       <Route path="/documents" element={<DocumentsPage />} />
+      <Route path="/documents/:documentId" element={<DocumentDetailPage />} />
+      <Route path="/documents/:documentId/review" element={<DocumentReviewPage />} />
       <Route path="/candidates" element={<CandidatesPage />} />
+      <Route path="/candidates/:profileId" element={<CandidateDetailPage />} />
     </Route></Route>
     <Route path="*" element={<Navigate to="/jobs" replace />} />
   </Routes>

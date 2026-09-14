@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom"
 import type { DocumentSummary, DocumentUploadItem } from "../api/types"
 import {
   canRetry,
@@ -63,7 +64,9 @@ export function DocumentQueue({
             return (
               <tr key={document.id}>
                 <td>
-                  <strong>{document.original_filename}</strong>
+                  <Link to={`/documents/${document.id}`}>
+                    <strong>{document.original_filename}</strong>
+                  </Link>
                   <small>{formatSize(document.size_bytes)}</small>
                 </td>
                 <td>
@@ -84,6 +87,11 @@ export function DocumentQueue({
                 </td>
                 <td>{formatTime(document.created_at)}</td>
                 <td>
+                  {document.status === "REVIEW_REQUIRED" ? (
+                    <Link className="button button-primary button-small" to={`/documents/${document.id}/review`}>
+                      去校对
+                    </Link>
+                  ) : null}
                   {canRetry(document) ? (
                     <button
                       type="button"

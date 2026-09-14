@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { MemoryRouter } from "react-router-dom"
 import { DocumentsPage } from "./DocumentsPage"
 import { useAppStore } from "../state/session"
 import type { DocumentSummary } from "../api/types"
@@ -29,9 +30,12 @@ function jsonResponse(body: unknown, status = 200) {
 
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  // The queue links each row to the document detail route.
   return render(
     <QueryClientProvider client={client}>
-      <DocumentsPage />
+      <MemoryRouter>
+        <DocumentsPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   )
 }

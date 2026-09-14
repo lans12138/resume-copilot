@@ -172,6 +172,10 @@ export const api = {
     request<CandidateProfile>(`/candidate-profiles/by-document/${documentId}`, {}, token),
   listProfileEvidence: (token: string, profileId: string) =>
     request<EvidenceChunk[]>(`/candidate-profiles/${profileId}/evidence`, {}, token),
+  getJobProfile: (token: string, jobId: string, profileId: string) =>
+    request<CandidateProfile>(`/jobs/${jobId}/profiles/${profileId}`, {}, token),
+  listJobProfileEvidence: (token: string, jobId: string, profileId: string) =>
+    request<EvidenceChunk[]>(`/jobs/${jobId}/profiles/${profileId}/evidence`, {}, token),
   confirmProfile(
     token: string, jobId: string, profileId: string, body: CandidateProfileEdit, expectedVersion: number,
   ) {

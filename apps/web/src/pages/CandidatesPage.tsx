@@ -76,7 +76,7 @@ export function CandidatesPage() {
               </span>
             </div>
           ) : (
-            <CandidateTable items={visible} />
+            <CandidateTable items={visible} jobId={jobId} />
           )}
         </>
       ) : null}
