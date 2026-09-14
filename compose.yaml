@@ -161,6 +161,64 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  worker:
+    image: resume-copilot-api:local
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - python
+      - backend/worker.py
+    environment: *backend-environment
+    volumes:
+      - resume_storage:/data/resumes
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import subprocess,sys; r=subprocess.run(["celery","-A","backend.app.infrastructure.celery:app","inspect","ping","--timeout","10"],timeout=15); sys.exit(r.returncode)
+      interval: 15s
+      timeout: 20s
+      retries: 20
+      start_period: 20s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  scheduler:
+    image: resume-copilot-api:local
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - python
+      - backend/scheduler.py
+    environment: *backend-environment
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import subprocess,sys; r=subprocess.run(["celery","-A","backend.app.infrastructure.celery:app","beat","--help"],timeout=15); sys.exit(r.returncode)
+      interval: 30s
+      timeout: 20s
+      retries: 10
+      start_period: 15s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   backend:
     driver: bridge
