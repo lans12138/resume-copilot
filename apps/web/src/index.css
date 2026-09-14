@@ -46,3 +46,9 @@
 .question.sensitive{border-color:#e7c9a8;background:#fbf3e6}
 .question .sens{margin-top:.45rem;color:#7a6310;font-size:.78rem;font-weight:700}
 @media(max-width:800px){.diff-grid{grid-template-columns:1fr}}
+
+/* FIN-004 document queue: per-file upload outcomes and failure detail rows. */
+.upload-outcomes{display:flex;flex-direction:column;gap:.45rem;margin:.7rem 0 0;padding:0;list-style:none}
+.upload-outcomes li{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;font-size:.82rem}
+.upload-outcomes small{color:#5c6862;font-weight:500}
+td small{display:block;color:var(--muted);font-weight:500}

@@ -7,9 +7,18 @@ import type {
   AssignmentList,
   CandidateFilter,
   CandidateList,
+  CandidateProfile,
+  CandidateProfileEdit,
   CreateMatchRunRequest,
   CurrentUser,
   DecisionRequest,
+  DocumentBatchAccepted,
+  DocumentContent,
+  DocumentList,
+  DocumentStatus,
+  DocumentSummary,
+  EvidenceChunk,
+  EvidenceChunkInput,
   InterviewDetail,
   InterviewList,
   Job,
@@ -51,7 +60,9 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
   const headers = new Headers(options.headers)
   headers.set("Accept", "application/json")
   if (token) headers.set("Authorization", `Bearer ${token}`)
-  if (options.body && !(options.body instanceof URLSearchParams)) headers.set("Content-Type", "application/json")
+  if (options.body && !(options.body instanceof URLSearchParams) && !(options.body instanceof FormData)) {
+    headers.set("Content-Type", "application/json")
+  }
   let response: Response
   try {
     response = await fetch(`${API_BASE_PATH}${path}`, { ...options, headers })
@@ -135,4 +146,48 @@ export const api = {
   // --- Reports (evidence, IMP-020) ---
   getReports: (token: string, runId: string) =>
     request<ReportList>(`/match-runs/${runId}/reports`, {}, token),
+  // --- Documents & profile review (FIN-004) ---
+  listDocuments(token: string, options: { status?: DocumentStatus | "ALL"; page?: number; pageSize?: number } = {}) {
+    const params = new URLSearchParams()
+    if (options.status && options.status !== "ALL") params.set("status", options.status)
+    if (options.page) params.set("page", String(options.page))
+    if (options.pageSize) params.set("page_size", String(options.pageSize))
+    const query = params.toString()
+    return request<DocumentList>(`/documents${query ? `?${query}` : ""}`, {}, token)
+  },
+  getDocument: (token: string, documentId: string) =>
+    request<DocumentSummary>(`/documents/${documentId}`, {}, token),
+  getDocumentContent: (token: string, documentId: string) =>
+    request<DocumentContent>(`/documents/${documentId}/content`, {}, token),
+  uploadDocuments(token: string, files: File[]) {
+    // The multipart Content-Type must stay unset so the browser adds its own
+    // boundary; `request` only sets JSON when the body is not FormData.
+    const body = new FormData()
+    for (const file of files) body.append("files", file)
+    return request<DocumentBatchAccepted>("/documents", { method: "POST", body }, token)
+  },
+  retryDocument: (token: string, documentId: string) =>
+    request<DocumentSummary>(`/documents/${documentId}/retry`, { method: "POST" }, token),
+  getProfileByDocument: (token: string, documentId: string) =>
+    request<CandidateProfile>(`/candidate-profiles/by-document/${documentId}`, {}, token),
+  listProfileEvidence: (token: string, profileId: string) =>
+    request<EvidenceChunk[]>(`/candidate-profiles/${profileId}/evidence`, {}, token),
+  confirmProfile(
+    token: string, jobId: string, profileId: string, body: CandidateProfileEdit, expectedVersion: number,
+  ) {
+    // Writes stay job-scoped on purpose: resource-level authorization lives
+    // there, while the review screen's reads are document-scoped.
+    return request<CandidateProfile>(
+      `/jobs/${jobId}/profiles/${profileId}/confirm?expected_version=${expectedVersion}`,
+      { method: "POST", body: JSON.stringify(body) },
+      token,
+    )
+  },
+  pinEvidence(token: string, jobId: string, profileId: string, chunks: EvidenceChunkInput[]) {
+    return request<EvidenceChunk[]>(
+      `/jobs/${jobId}/profiles/${profileId}/evidence`,
+      { method: "POST", body: JSON.stringify(chunks) },
+      token,
+    )
+  },
 }

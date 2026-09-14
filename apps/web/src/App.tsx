@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, u
 import { useState } from "react"
 import { useAppStore } from "./state/session"
 import { CandidatesPage } from "./pages/CandidatesPage"
+import { DocumentsPage } from "./pages/DocumentsPage"
 import { JobDetailPage } from "./pages/JobDetailPage"
 import { JobsPage } from "./pages/JobsPage"
 import { LoginPage } from "./pages/LoginPage"
@@ -31,6 +32,7 @@ function WorkspaceLayout() {
       </NavLink>
       <nav className="topbar-nav" aria-label="主导航">
         <NavLink to="/jobs">岗位</NavLink>
+        <NavLink to="/documents">简历文档</NavLink>
         <NavLink to="/candidates">候选人</NavLink>
       </nav>
       <div className="user-menu"><span><strong>{user?.username}</strong><small>{user?.role === "HIRING_MANAGER" ? "招聘主管" : user?.role}</small></span><button className="button button-ghost button-small" type="button" onClick={logout}>退出登录</button></div>
@@ -49,6 +51,7 @@ export function AppRoutes() {
       <Route path="/application-runs/:runId" element={<ApplicationRunPage />} />
       <Route path="/approvals/:approvalId" element={<ApprovalPage />} />
       <Route path="/interviews/:interviewId" element={<InterviewPage />} />
+      <Route path="/documents" element={<DocumentsPage />} />
       <Route path="/candidates" element={<CandidatesPage />} />
     </Route></Route>
     <Route path="*" element={<Navigate to="/jobs" replace />} />

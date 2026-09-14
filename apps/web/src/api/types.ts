@@ -237,3 +237,114 @@ export interface ReportOut {
   claims: ClaimOut[]
 }
 export interface ReportList { reports: ReportOut[] }
+
+// --- Documents & profile review (FIN-004) ---
+export type DocumentStatus =
+  | "UPLOADED" | "QUEUED" | "PARSING" | "REVIEW_REQUIRED"
+  | "READY" | "FAILED" | "UNSUPPORTED" | "SUPERSEDED"
+
+export interface DocumentSummary {
+  id: string
+  original_filename: string
+  media_type: string
+  size_bytes: number
+  content_sha256: string
+  status: DocumentStatus
+  parser_version: string | null
+  attempt: number
+  retryable: boolean
+  // The backend keeps these two fields distinct on purpose: the code drives the
+  // UI bucket, the message is the safe human-readable reason. Neither is
+  // collapsed into a generic "解析失败".
+  error_code: string | null
+  error_message: string | null
+  uploaded_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DocumentList { items: DocumentSummary[]; page: number; page_size: number; total: number }
+
+export type UploadOutcome = "accepted" | "duplicate" | "rejected"
+
+export interface UploadErrorOut { code: string; message: string; http_status: number }
+
+export interface DocumentUploadItem {
+  filename: string
+  outcome: UploadOutcome
+  resource_id: string | null
+  status_url: string | null
+  document: DocumentSummary | null
+  duplicate_of: string | null
+  error: UploadErrorOut | null
+}
+
+export interface DocumentBatchAccepted {
+  items: DocumentUploadItem[]
+  total: number
+  accepted: number
+  duplicates: number
+  rejected: number
+}
+
+export interface ParsedBlockView { block_index: number; text: string; locator: Record<string, unknown> }
+
+export interface DocumentContent {
+  document_id: string
+  media_type: string
+  full_text: string
+  page_count: number | null
+  paragraph_count: number | null
+  table_count: number | null
+  warnings: string[]
+  blocks: ParsedBlockView[]
+}
+
+export type ProfileStatus = "DRAFT" | "REVIEW_REQUIRED" | "READY" | "SUPERSEDED"
+
+export interface CandidateProfile {
+  id: string
+  candidate_id: string
+  document_id: string
+  version_no: number
+  status: ProfileStatus
+  profile_json: Record<string, unknown>
+  normalized_skills: string[]
+  years_experience: number | null
+  education_level: string | null
+  schema_version: string
+  confirmed_by: string | null
+  confirmed_at: string | null
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+export interface EvidenceChunk {
+  id: string
+  document_id: string
+  candidate_profile_id: string
+  chunk_index: number
+  section_type: string
+  locator_json: Record<string, unknown>
+  text: string
+  text_sha256: string
+  created_at: string
+}
+
+export interface EvidenceChunkInput {
+  document_id: string
+  chunk_index: number
+  section_type: string
+  locator: Record<string, unknown>
+  text: string
+}
+
+/** Human edits applied to a REVIEW_REQUIRED draft; the backend re-validates it. */
+export interface CandidateProfileEdit {
+  profile_json: Record<string, unknown>
+  normalized_skills: string[]
+  years_experience?: number | null
+  education_level?: string | null
+}
+
