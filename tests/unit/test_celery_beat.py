@@ -28,5 +28,7 @@ def test_autodiscover_registers_existing_task_modules() -> None:
 
     registered = set(app.tasks.keys())
     assert "maintenance.expire_approvals" in registered
-    assert any(name.startswith("documents.") for name in registered)
-    assert any(name.startswith("candidates.") for name in registered)
+    assert "documents.parse" in registered
+    # The candidates package's task is named "embeddings.generate_chunks"
+    # (per the routing/queue design), not a "candidates.*" prefix.
+    assert "embeddings.generate_chunks" in registered
