@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import Callable
-from typing import Any
 from uuid import UUID
 
 from celery import Task, shared_task  # type: ignore[import-untyped]
@@ -107,7 +106,7 @@ async def _run_parse_async(
             )
             return DocumentStatus.FAILED.value
         countdown = min(2**attempt_no, 30) + random.uniform(0, 2)
-        raise _NeedsRetry(error, countdown, max_retries)
+        raise _NeedsRetry(error, countdown, max_retries) from error
     finally:
         await repository.close()
         # Tear down the loop-bound engine/redis within the same event loop so no
