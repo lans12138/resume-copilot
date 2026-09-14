@@ -22,7 +22,7 @@ from backend.app.documents.parse_service import (
     DocumentParseService,
     InMemoryDocumentRepository,
     TransientParseError,
-    _dict_to_parsed,
+    parsed_from_json,
 )
 from backend.app.documents.parsers import (
     DocumentParseError,
@@ -154,7 +154,7 @@ def test_parsed_json_round_trips_through_dict() -> None:
     service = _service(doc, parser=parser)
     asyncio.run(service.process_parse(doc.id, attempt=1, parser_version="v1"))
 
-    restored = _dict_to_parsed(doc.parsed_json)  # type: ignore[arg-type]
+    restored = parsed_from_json(doc.parsed_json)  # type: ignore[arg-type]
     assert restored == _parsed()
     assert restored.blocks[0].locator.page_number == 1  # type: ignore[union-attr]
 

@@ -16,6 +16,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from backend.app.candidates.schemas import CandidateProfileDraft, ContactInfo, SkillClaim
+from backend.app.core.settings import Settings
 from backend.app.documents.parsers import ParsedBlock
 
 # Deterministic skill vocabulary for the fake extractor. Lowercase keys.
@@ -133,3 +134,15 @@ class FakeModelGateway:
             if latin:
                 return line
         return None
+
+
+def build_model_gateway(settings: Settings) -> ModelGateway:
+    """Return the extraction gateway selected by configuration.
+
+    The MVP ships only the deterministic, key-free ``FakeModelGateway``. FIN-008
+    adds the real Qwen adapter behind ``MOCK_MODEL_MODE=false``; until that
+    adapter exists, a non-mock configuration still resolves to the fake so a
+    misconfigured deployment can never push untrusted resume text to a remote
+    model that nobody validated.
+    """
+    return FakeModelGateway()

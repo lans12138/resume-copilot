@@ -15,6 +15,7 @@ delivery safe without relying on ``acks_late``.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
@@ -46,6 +47,18 @@ class ParseEnqueuer(Protocol):
     """Delivers a parse task. Implemented by Celery in production, in-memory in tests."""
 
     def enqueue_parse(self, document_id: UUID, *, attempt: int, parser_version: str) -> None: ...
+
+
+@runtime_checkable
+class ProfileExtractionEnqueuer(Protocol):
+    """Delivers the profile-extraction task that follows a successful parse.
+
+    Kept as a port so the documents package never imports the candidates package:
+    the Celery task wrapper supplies the concrete implementation (detailed design
+    §7.4 — parsed blocks become a REVIEW_REQUIRED CandidateProfile draft).
+    """
+
+    def enqueue_extraction(self, document_id: UUID) -> None: ...
 
 
 class TransientParseError(Exception):
@@ -120,7 +133,12 @@ def _parsed_to_dict(parsed: ParsedDocument) -> dict[str, Any]:
     }
 
 
-def _dict_to_parsed(data: Mapping[str, Any]) -> ParsedDocument:
+def parsed_from_json(data: Mapping[str, Any]) -> ParsedDocument:
+    """Rebuild a ``ParsedDocument`` from the stored ``ResumeDocument.parsed_json``.
+
+    Public because the extraction task (candidates package) consumes the same
+    persisted representation the parse stage wrote.
+    """
     blocks: list[ParsedBlock] = []
     for raw in data["blocks"]:
         locator_dict = raw["locator"]
@@ -171,12 +189,14 @@ class DocumentParseService:
         parsers: Mapping[str, DocumentParser],
         enqueue: ParseEnqueuer,
         settings: Settings,
+        extract_profiles: ProfileExtractionEnqueuer | None = None,
     ) -> None:
         self._documents = documents
         self._storage = storage
         self._parsers = parsers
         self._enqueue = enqueue
         self._settings = settings
+        self._extract_profiles = extract_profiles
 
     def _limits(self) -> ParseLimits:
         settings = self._settings
@@ -201,10 +221,14 @@ class DocumentParseService:
             return document.status  # a newer attempt already ran; duplicate ignored.
         if document.attempt == attempt and document.status in (
             DocumentStatus.REVIEW_REQUIRED,
+            DocumentStatus.READY,
             DocumentStatus.FAILED,
             DocumentStatus.UNSUPPORTED,
         ):
-            return document.status  # same attempt already terminal; duplicate ignored.
+            # Same attempt already terminal; a duplicate delivery must never
+            # reopen a parsed document, and above all must never drag a
+            # human-confirmed (READY) document back to REVIEW_REQUIRED.
+            return document.status
 
         document.status = DocumentStatus.PARSING
         document.attempt = attempt
@@ -236,6 +260,13 @@ class DocumentParseService:
         document.retryable = False
         await self._documents.save(document)
         await self._documents.commit()
+        # §7.4: the parse stage ends with a REVIEW_REQUIRED draft, so hand the
+        # document to the extraction stage exactly once. A broker outage must not
+        # fail a parse that already succeeded; the document stays REVIEW_REQUIRED
+        # and is re-published by the maintenance sweep (FIN-006).
+        if self._extract_profiles is not None:
+            with suppress(Exception):
+                self._extract_profiles.enqueue_extraction(document.id)
         return DocumentStatus.REVIEW_REQUIRED
 
     async def retry_parse(self, document_id: UUID) -> DocumentStatus:
@@ -320,3 +351,14 @@ class CeleryParseEnqueuer(ParseEnqueuer):
             args=[str(document_id)],
             kwargs={"attempt": attempt, "parser_version": parser_version},
         )
+
+
+class CeleryProfileExtractionEnqueuer(ProfileExtractionEnqueuer):
+    """Production ``ProfileExtractionEnqueuer`` that delivers a named Celery task."""
+
+    def __init__(self, celery_app: Celery, task_name: str) -> None:
+        self._celery_app = celery_app
+        self._task_name = task_name
+
+    def enqueue_extraction(self, document_id: UUID) -> None:
+        self._celery_app.send_task(self._task_name, args=[str(document_id)])

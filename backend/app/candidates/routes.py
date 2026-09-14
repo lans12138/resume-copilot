@@ -31,6 +31,7 @@ from backend.app.candidates.schemas import (
 )
 from backend.app.candidates.service import ProfileReviewService
 from backend.app.core.errors import AppError
+from backend.app.documents.repository import SqlAlchemyDocumentRepository
 from backend.app.infrastructure.celery import app as celery_app
 from backend.app.infrastructure.embedding import build_embedding_gateway
 from backend.app.infrastructure.runtime import RuntimeResources
@@ -115,7 +116,9 @@ async def confirm_candidate_profile(
         await job_service.get_authorized(actor, job_id)
         profile_repo = SqlCandidateProfileRepository(session)
         chunk_repo = SqlEvidenceChunkRepository(session)
-        service = ProfileReviewService(profile_repo, chunk_repo)
+        service = ProfileReviewService(
+            profile_repo, chunk_repo, SqlAlchemyDocumentRepository(session)
+        )
         result = await service.confirm_profile(
             actor=actor,
             profile_id=profile_id,

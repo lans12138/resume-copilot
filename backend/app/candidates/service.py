@@ -35,8 +35,9 @@ from backend.app.candidates.schemas import (
     revalidate_draft,
 )
 from backend.app.core.errors import AppError, app_error
-from backend.app.documents.models import ResumeDocument
+from backend.app.documents.models import DocumentStatus, ResumeDocument
 from backend.app.documents.parsers import ParsedDocument
+from backend.app.documents.repository import DocumentRepository
 from backend.app.infrastructure.model_gateway import ModelGateway, normalize_email_hash
 
 PROFILE_SCHEMA_VERSION = "v1"
@@ -139,9 +140,11 @@ class ProfileReviewService:
         self,
         profile_repo: CandidateProfileRepository,
         chunk_repo: EvidenceChunkRepository,
+        documents: DocumentRepository | None = None,
     ) -> None:
         self._profiles = profile_repo
         self._chunks = chunk_repo
+        self._documents = documents
 
     async def confirm_profile(
         self,
@@ -178,6 +181,27 @@ class ProfileReviewService:
                 retryable=True,
             )
 
+        # §7.4: confirmation also closes the parse lifecycle. The document that
+        # produced this profile must leave REVIEW_REQUIRED in the same
+        # transaction, so a settled resume can never be re-extracted behind a
+        # confirmed profile.
+        document: ResumeDocument | None = None
+        if self._documents is not None:
+            document = await self._documents.get_for_update(profile.document_id)
+            if document is None:
+                raise app_error(
+                    code="DOCUMENT_NOT_FOUND",
+                    http_status=404,
+                    safe_message="简历文档不存在",
+                )
+            if document.status is not DocumentStatus.REVIEW_REQUIRED:
+                raise app_error(
+                    code="DOCUMENT_NOT_REVIEWABLE",
+                    http_status=409,
+                    safe_message="简历文档当前状态不可确认",
+                    details={"status": document.status.value},
+                )
+
         profile.profile_json = edit.profile_json
         profile.normalized_skills = sorted(
             {s.strip().casefold() for s in edit.normalized_skills if s.strip()}
@@ -195,6 +219,9 @@ class ProfileReviewService:
         profile.confirmed_at = datetime.now(UTC)
         profile.version += 1
         await self._profiles.save(profile)
+        if document is not None and self._documents is not None:
+            document.status = DocumentStatus.READY
+            await self._documents.save(document)
         # §7.2: after the profile is confirmed and committed, publish the embedding
         # task for its evidence chunks. Chunks were persisted in an earlier request,
         # so a worker picking this up before the route commits sees no gap.

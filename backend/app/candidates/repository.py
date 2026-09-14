@@ -35,6 +35,8 @@ class CandidateProfileRepository(Protocol):
 
     async def get(self, profile_id: UUID) -> CandidateProfile | None: ...
 
+    async def get_by_document_id(self, document_id: UUID) -> CandidateProfile | None: ...
+
     async def list_ready_versions(self, candidate_id: UUID) -> list[CandidateProfile]: ...
 
 
@@ -87,6 +89,16 @@ class SqlCandidateProfileRepository:
 
     async def get(self, profile_id: UUID) -> CandidateProfile | None:
         return await self.session.get(CandidateProfile, profile_id)
+
+    async def get_by_document_id(self, document_id: UUID) -> CandidateProfile | None:
+        """Newest profile draft extracted from a document (extraction idempotency)."""
+        profile: CandidateProfile | None = await self.session.scalar(
+            select(CandidateProfile)
+            .where(CandidateProfile.document_id == document_id)
+            .order_by(CandidateProfile.version_no.desc())
+            .limit(1)
+        )
+        return profile
 
     async def list_ready_versions(self, candidate_id: UUID) -> list[CandidateProfile]:
         return list(

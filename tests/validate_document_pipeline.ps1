@@ -1,0 +1,89 @@
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$composeFile = Join-Path $repoRoot 'compose.yaml'
+$envFile = Join-Path $repoRoot '.env.example'
+$projectName = 'resume-copilot-pipeline-probe'
+$backendDevelopmentImage = 'resume-copilot-backend-development:local'
+# The probe container has no compose volume mounted, so point storage at a path
+# that always exists and is writable inside the image.
+$storageRoot = '/tmp/resume-pipeline-e2e'
+
+function Invoke-Docker {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+    $output = & docker @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker command failed: docker $($Arguments -join ' ')`n$($output -join "`n")"
+    }
+    return @($output | ForEach-Object { $_.ToString() })
+}
+
+function Invoke-Compose {
+    param([Parameter(Mandatory)][string[]] $Arguments)
+    return Invoke-Docker -Arguments (@(
+        'compose',
+        '--project-name', $projectName,
+        '--env-file', $envFile,
+        '--file', $composeFile
+    ) + $Arguments)
+}
+
+function Get-ProjectResources {
+    $containers = Invoke-Docker -Arguments @(
+        'ps', '--all',
+        '--filter', "label=com.docker.compose.project=$projectName",
+        '--format', '{{.Names}}'
+    ) | Where-Object { $_.Trim() }
+    $volumes = Invoke-Docker -Arguments @(
+        'volume', 'ls',
+        '--filter', "label=com.docker.compose.project=$projectName",
+        '--format', '{{.Name}}'
+    ) | Where-Object { $_.Trim() }
+    return @($containers) + @($volumes)
+}
+
+if (@(Get-ProjectResources).Count -gt 0) {
+    throw "Refusing to reuse existing Docker resources for project: $projectName"
+}
+
+try {
+    # Build the development image (carries pytest + backend + tests).
+    Invoke-Docker -Arguments @(
+        'build', '--file', (Join-Path $repoRoot 'deploy/docker/backend.Dockerfile'),
+        '--target', 'development', '--tag', $backendDevelopmentImage, $repoRoot
+    )
+
+    # Start the real dependencies: PostgreSQL (state) and Redis (Celery broker,
+    # so the parse -> extract -> embed enqueue path is exercised for real).
+    Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'postgres', 'redis')
+
+    # Apply the full migration chain so every table the pipeline touches exists.
+    Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'migrate')
+
+    # Run the end-to-end suite inside the dev container on the compose network so
+    # DATABASE_URL (host ``postgres``) and REDIS_URL (host ``redis``) resolve.
+    # NOTE: precompute the network name into its own variable. Inlining
+    # ``"$projectName" + '_backend'`` inside an array literal makes PowerShell emit
+    # two separate arguments, which docker then reads as an invalid image reference.
+    $networkName = "$projectName" + '_backend'
+    $pytestArgs = @(
+        'run', '--rm',
+        '--network', $networkName,
+        '--env-file', $envFile,
+        '--env', "STORAGE_ROOT=$storageRoot",
+        $backendDevelopmentImage,
+        'pytest', '-q', 'tests/integration/test_document_pipeline_e2e.py'
+    )
+    & docker @pytestArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "FIN-003 document pipeline end-to-end tests failed (exit $LASTEXITCODE)"
+    }
+    Write-Host 'FIN-003 document pipeline end-to-end tests passed.'
+}
+finally {
+    Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans')
+}

@@ -213,6 +213,11 @@ class _FakeProfileRepository:
     async def get(self, profile_id: UUID) -> CandidateProfile | None:
         return self._profile if self._profile.id == profile_id else None
 
+    async def get_by_document_id(self, document_id: UUID) -> CandidateProfile | None:
+        if self._profile.document_id == document_id:
+            return self._profile
+        return None
+
     async def list_ready_versions(self, candidate_id: UUID) -> list[CandidateProfile]:
         if self._profile.status == CandidateProfileStatus.READY:
             return [self._profile]

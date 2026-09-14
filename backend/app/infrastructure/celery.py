@@ -9,6 +9,8 @@ from backend.app.core.settings import Settings
 TASK_ROUTES: dict[str, dict[str, str]] = {
     "documents.parse": {"queue": "documents"},
     "documents.retry_parse": {"queue": "documents"},
+    # §7.4: the extraction stage continues the parse pipeline on the same queue.
+    "candidates.extract_profile": {"queue": "documents"},
     "embeddings.generate_chunks": {"queue": "embeddings"},
     "agent.execute_match_run": {"queue": "agent"},
     "agent.execute_application_run": {"queue": "agent"},

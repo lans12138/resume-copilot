@@ -78,6 +78,10 @@ class FakeCandidateProfileRepository:
     async def get(self, profile_id: UUID) -> CandidateProfile | None:
         return self.profiles.get(profile_id)
 
+    async def get_by_document_id(self, document_id: UUID) -> CandidateProfile | None:
+        matches = [p for p in self.profiles.values() if p.document_id == document_id]
+        return max(matches, key=lambda p: p.version_no) if matches else None
+
     async def list_ready_versions(self, candidate_id: UUID) -> list[CandidateProfile]:
         return [
             p

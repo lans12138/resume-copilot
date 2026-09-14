@@ -29,6 +29,7 @@ from backend.app.core.settings import get_settings
 from backend.app.documents.models import DocumentStatus
 from backend.app.documents.parse_service import (
     CeleryParseEnqueuer,
+    CeleryProfileExtractionEnqueuer,
     DocumentParseService,
     TransientParseError,
     build_parser_registry,
@@ -48,6 +49,9 @@ def _build_service(
         parsers=build_parser_registry(parser_version=settings.parser_version),
         enqueue=CeleryParseEnqueuer(app, "documents.retry_parse"),
         settings=settings,
+        # §7.4: a parsed document hands off to the candidates extraction task,
+        # which turns the stored blocks into a REVIEW_REQUIRED profile draft.
+        extract_profiles=CeleryProfileExtractionEnqueuer(app, "candidates.extract_profile"),
     )
 
 
