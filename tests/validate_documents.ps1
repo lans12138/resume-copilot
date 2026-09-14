@@ -1,3 +1,13 @@
+﻿# This script holds Chinese literals and reads Chinese documents, so it needs an
+# explicit encoding on both sides when it runs outside pwsh:
+#
+# - the file itself carries a UTF-8 BOM, because a BOM-less UTF-8 .ps1 is decoded with
+#   the ANSI code page by the older engine and dies on a parser error before line 1;
+# - every Get-Content passes -Encoding UTF8, because the ANSI default misaligns
+#   multi-byte sequences, which silently swallows line starts and corrupts the code
+#   fence counts the checks below depend on.
+#
+# Both are no-ops under pwsh. Without them this gate could only run in CI.
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
@@ -24,14 +34,14 @@ function Read-RepositoryDocument {
 
     $documentPath = Join-Path $repositoryRoot $Name
     Assert-Condition (Test-Path -LiteralPath $documentPath) "缺少文档：$Name"
-    return Get-Content -Raw -LiteralPath $documentPath
+    return Get-Content -Encoding UTF8 -Raw -LiteralPath $documentPath
 }
 
 $markdownFiles = Get-ChildItem -LiteralPath $repositoryRoot -Filter '*.md' -File
 Assert-Condition ($markdownFiles.Count -ge 8) 'Markdown 文档数量异常。'
 
 foreach ($markdownFile in $markdownFiles) {
-    $documentLines = Get-Content -LiteralPath $markdownFile.FullName
+    $documentLines = Get-Content -Encoding UTF8 -LiteralPath $markdownFile.FullName
     $backtickFenceCount = @($documentLines | Where-Object { $_ -match '^\s*```' }).Count
     $tildeFenceCount = @($documentLines | Where-Object { $_ -match '^\s*~~~' }).Count
     Assert-Condition (($backtickFenceCount % 2) -eq 0) "反引号代码围栏未闭合：$($markdownFile.Name)"
@@ -49,7 +59,7 @@ foreach ($markdownFile in $markdownFiles) {
         }
     }
 
-    $documentText = Get-Content -Raw -LiteralPath $markdownFile.FullName
+    $documentText = Get-Content -Encoding UTF8 -Raw -LiteralPath $markdownFile.FullName
     $localLinks = [regex]::Matches($documentText, '\]\(\./([^\)#]+)(?:#[^\)]*)?\)')
     foreach ($localLink in $localLinks) {
         $targetPath = Join-Path $repositoryRoot $localLink.Groups[1].Value
@@ -115,7 +125,7 @@ $overviewMethodPaths = @(
         ForEach-Object { $_.Groups[1].Value + ' ' + $_.Groups[2].Value } |
         Sort-Object -Unique
 )
-Assert-Condition ($overviewMethodPaths.Count -eq 40) "概要设计 API 方法数量异常：$($overviewMethodPaths.Count)"
+Assert-Condition ($overviewMethodPaths.Count -eq 46) "概要设计 API 方法数量异常：$($overviewMethodPaths.Count)"
 
 $missingMethodPaths = @(
     $overviewMethodPaths | Where-Object { -not $detailedDesign.Contains($_) }
