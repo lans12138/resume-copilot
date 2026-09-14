@@ -34,3 +34,8 @@ Thumbs.db
 logs/
 tmp/
 *.log
+
+# Local probe scratch. The CI workflows keep their logs as workflow artefacts,
+# so these are only ever local debugging leftovers and must never be committed.
+ci_logs/
+git_verify.txt
