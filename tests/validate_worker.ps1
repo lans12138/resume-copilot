@@ -43,6 +43,19 @@ function Get-ProjectResources {
     return @($containers) + @($volumes)
 }
 
+function Dump-Logs {
+    param([Parameter(Mandatory)][string] $Service)
+    Write-Host "----- docker compose logs $Service (diagnostic) -----"
+    try {
+        $out = (Invoke-Compose -Arguments @('logs', $Service) | Out-String)
+        Write-Host $out
+    }
+    catch {
+        Write-Host "failed to fetch logs for $Service : $_"
+    }
+    Write-Host "------------------------------------------------------"
+}
+
 if (@(Get-ProjectResources).Count -gt 0) {
     throw "Refusing to reuse existing Docker resources for project: $projectName"
 }
@@ -64,9 +77,14 @@ try {
     # Start the worker and the beat scheduler.
     Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'worker', 'scheduler')
 
+    # Surface startup output immediately so any boot crash is visible in CI.
+    Start-Sleep -Seconds 8
+    Dump-Logs -Service 'worker'
+    Dump-Logs -Service 'scheduler'
+
     # Wait for the worker to finish booting and register with the broker.
     $workerReady = $false
-    $deadline = (Get-Date).AddSeconds(60)
+    $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
         $log = (Invoke-Compose -Arguments @('logs', 'worker') | Out-String)
         if ($log -match 'celery@.*ready' -or $log -match 'Connected to redis') {
@@ -76,6 +94,7 @@ try {
         Start-Sleep -Seconds 3
     }
     if (-not $workerReady) {
+        Dump-Logs -Service 'worker'
         throw "Worker did not become ready within the timeout."
     }
 
@@ -97,6 +116,7 @@ try {
         Start-Sleep -Seconds 3
     }
     if (-not $consumed) {
+        Dump-Logs -Service 'worker'
         throw "Worker did not consume maintenance.expire_approvals from Redis."
     }
 
@@ -112,6 +132,7 @@ try {
         Start-Sleep -Seconds 3
     }
     if (-not $beatFired) {
+        Dump-Logs -Service 'scheduler'
         throw "Celery Beat did not publish maintenance.expire_approvals within the interval."
     }
 
