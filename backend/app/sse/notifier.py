@@ -148,16 +148,22 @@ class _RedisSubscription:
         if not self._ready:
             await self._pubsub.subscribe(self._channel)
             self._ready = True
-        # Enforce the heartbeat bound with asyncio.wait_for rather than trusting
-        # get_message's own timeout. In some redis.asyncio versions (and in the
-        # shared-Redis e2e stack) get_message ignored its timeout and blocked until
-        # a real message arrived; the cross-process Pub/Sub wake from the worker was
-        # also unreliable, so the SSE loop hung here and the §13.2 PostgreSQL
-        # re-read never fired. wait_for guarantees the loop returns after `timeout`
-        # and re-reads the run, discovering RUN_COMPLETED.
+        # Block for up to `timeout` waiting for a publish, instead of a non-blocking
+        # poll that returns None immediately. A non-blocking get_message makes the SSE
+        # loop spin every few milliseconds; combined with the factory-mode
+        # SqlAgentRunRepository (refresh_for_poll closes + reopens a DB session on
+        # every poll, IMP-025 §13.2), that storm exhausts the connection pool and the
+        # API logs "garbage collector is cleaning up non-checked-in connection" while
+        # the stream dies before it can emit the terminal frame — so the browser never
+        # refetches and the ranking stays at 0 candidates (recruitment-flow.spec.ts).
+        # Passing `timeout` lets get_message block until a real message or the bound;
+        # asyncio.wait_for is the backstop for redis.asyncio versions that ignore the
+        # argument and block until a message (it interrupts them at `timeout`). Either
+        # way the loop re-reads PostgreSQL at most once per `timeout`, and wakes
+        # immediately when the worker's publish arrives.
         try:
             await asyncio.wait_for(
-                self._pubsub.get_message(ignore_subscribe_messages=True),
+                self._pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout),
                 timeout,
             )
         except TimeoutError:
