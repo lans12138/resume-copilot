@@ -17,7 +17,9 @@ import pytest
 
 from backend.app.agent.enqueuer import CeleryRunEnqueuer
 from backend.app.agent.models import AgentRun, RunStatus, RunType
+from backend.app.main import create_app
 from backend.app.match_run.routes import _publish_match_run
+from tests.unit.settings_factory import make_settings
 
 
 def _run(*, attempt: int = 1) -> AgentRun:
@@ -139,3 +141,24 @@ def test_celery_enqueuer_uses_the_operation_key_as_task_id() -> None:
     task_ids = [item["task_id"] for item in sent]
     assert task_ids[0] == task_ids[1] == f"{run_id}:1"
     assert task_ids[2] == f"{run_id}:2"
+
+
+def test_async_match_run_endpoints_advertise_202_accepted() -> None:
+    """create / retry / cancel all hand execution to a worker, so they must read 202.
+
+    These are not synchronous completions: the request returns the moment the run
+    is durable, and the probe (validate_application_entry.ps1) pins that contract by
+    requiring a 202 on the retry response. A route that drifts back to the FastAPI
+    default of 200 would pass every unit test and still fail that probe — so the
+    status code is asserted here, against the OpenAPI schema, where it is local and
+    hermetic.
+    """
+    paths = create_app(make_settings()).openapi()["paths"]
+    for path in (
+        "/api/v1/jobs/{job_id}/match-runs",
+        "/api/v1/match-runs/{run_id}/retry",
+        "/api/v1/match-runs/{run_id}/cancel",
+    ):
+        assert path in paths, f"{path} not registered"
+        assert "post" in paths[path], f"{path} is not a POST"
+        assert "202" in paths[path]["post"]["responses"], f"{path} must answer 202"

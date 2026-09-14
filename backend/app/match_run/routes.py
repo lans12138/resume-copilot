@@ -173,7 +173,7 @@ async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Matc
         )
 
 
-@router.post("/match-runs/{run_id}/retry", response_model=MatchRunAccepted)
+@router.post("/match-runs/{run_id}/retry", status_code=202, response_model=MatchRunAccepted)
 async def retry_match_run(
     run_id: UUID, actor: ActorDep, request: Request, guard: IdempotencyGuardDep
 ) -> MatchRunAccepted:
@@ -212,7 +212,7 @@ async def retry_match_run(
         return result
 
 
-@router.post("/match-runs/{run_id}/cancel", response_model=MatchRunAccepted)
+@router.post("/match-runs/{run_id}/cancel", status_code=202, response_model=MatchRunAccepted)
 async def cancel_match_run(
     run_id: UUID, actor: ActorDep, request: Request, guard: IdempotencyGuardDep
 ) -> MatchRunAccepted:
