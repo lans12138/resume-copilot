@@ -11,6 +11,9 @@ from starlette.responses import JSONResponse
 
 from backend.app.approvals.routes import router as approvals_router
 from backend.app.auth.routes import router as auth_router
+from backend.app.candidates.routes import (
+    profile_router as candidate_profiles_router,
+)
 from backend.app.candidates.routes import router as candidates_router
 from backend.app.core.context import get_request_id
 from backend.app.core.errors import AppError, register_exception_handlers
@@ -77,6 +80,7 @@ def create_app(
     application.include_router(jobs_router)
     application.include_router(documents_router)
     application.include_router(candidates_router)
+    application.include_router(candidate_profiles_router)
     application.include_router(reports_router)
     application.include_router(application_runs_router)
     application.include_router(approvals_router)

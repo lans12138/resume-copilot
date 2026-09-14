@@ -22,6 +22,7 @@ from backend.app.documents.parse_service import (
 from backend.app.documents.repository import SqlAlchemyDocumentRepository
 from backend.app.documents.schemas import (
     DocumentBatchAccepted,
+    DocumentContentResponse,
     DocumentListResponse,
     DocumentResponse,
 )
@@ -91,6 +92,23 @@ async def get_document(
     resources: RuntimeResources = request.app.state.resources
     async with resources.session_factory() as session:
         return await upload_service(request, session).get_document(actor, document_id)
+
+
+@router.get("/{document_id}/content", response_model=DocumentContentResponse)
+async def get_document_content(
+    document_id: UUID,
+    request: Request,
+    actor: Annotated[Actor, Depends(get_current_actor)],
+) -> DocumentContentResponse:
+    """Parsed source text and block locators, for the profile review screen.
+
+    Document-scoped rather than job-scoped on purpose: a resume is reviewed in the
+    talent pool, before it is attached to any job, so there is no job to authorize
+    against yet. HR-only, read-only.
+    """
+    resources: RuntimeResources = request.app.state.resources
+    async with resources.session_factory() as session:
+        return await upload_service(request, session).get_content(actor, document_id)
 
 
 @router.post("/{document_id}/retry", response_model=DocumentResponse, status_code=202)

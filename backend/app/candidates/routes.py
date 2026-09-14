@@ -15,7 +15,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from backend.app.auth.dependencies import get_current_actor
+from backend.app.auth.dependencies import get_current_actor, require_roles
+from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.candidates.embedding_service import CeleryEmbeddingEnqueuer
 from backend.app.candidates.repository import (
@@ -41,6 +42,52 @@ from backend.app.retrieval.preview import CandidateFilter, preview_ranking
 from backend.app.retrieval.repository import SqlRetrievalRepository
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["candidates"])
+
+# Document/profile-scoped reads. The review screen is reached from the talent
+# pool ("/documents/:documentId/review"), i.e. before the resume is attached to
+# any job, so it cannot supply a job id. Keeping these reads free of job scope
+# avoids weakening the resource-level authorization on the write paths: confirm
+# and evidence pinning stay under "/jobs/{job_id}/..." and still go through
+# JobService.get_authorized. Reads are HR-only, matching the design's role model.
+profile_router = APIRouter(prefix="/api/v1/candidate-profiles", tags=["candidate-profiles"])
+
+
+@profile_router.get("/by-document/{document_id}", response_model=CandidateProfileResponse)
+async def get_profile_by_document(
+    document_id: UUID,
+    request: Request,
+    actor: Annotated[Actor, Depends(require_roles(UserRole.HR))],
+) -> CandidateProfileResponse:
+    """Newest extracted profile for a document, whatever its review status.
+
+    Lets the review route resolve a document to its draft without a job context.
+    """
+    resources: RuntimeResources = request.app.state.resources
+    async with resources.session_factory() as session:
+        profile = await SqlCandidateProfileRepository(session).get_by_document_id(document_id)
+        if profile is None:
+            raise AppError(
+                code="PROFILE_NOT_FOUND",
+                http_status=404,
+                safe_message="该简历尚未生成待校对资料",
+                details={"document_id": str(document_id)},
+            )
+        return CandidateProfileResponse.model_validate(profile)
+
+
+@profile_router.get("/{profile_id}/evidence", response_model=list[EvidenceChunkResponse])
+async def list_profile_evidence(
+    profile_id: UUID,
+    request: Request,
+    actor: Annotated[Actor, Depends(require_roles(UserRole.HR))],
+) -> list[EvidenceChunkResponse]:
+    """Evidence chunks pinned to a profile (read-only twin of the job-scoped route)."""
+    resources: RuntimeResources = request.app.state.resources
+    async with resources.session_factory() as session:
+        service = ProfileReviewService(
+            SqlCandidateProfileRepository(session), SqlEvidenceChunkRepository(session)
+        )
+        return await service.list_evidence(actor=actor, profile_id=profile_id)
 
 
 @router.get("/{job_id}/candidates", response_model=CandidateListResponse)

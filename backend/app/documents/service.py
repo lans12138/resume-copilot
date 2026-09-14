@@ -14,9 +14,10 @@ from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
 from backend.app.documents.models import DocumentStatus, ResumeDocument
-from backend.app.documents.parse_service import ParseEnqueuer
+from backend.app.documents.parse_service import ParseEnqueuer, parsed_from_json, parsed_to_json
 from backend.app.documents.schemas import (
     DocumentBatchAccepted,
+    DocumentContentResponse,
     DocumentListResponse,
     DocumentResponse,
     DocumentUploadResult,
@@ -199,6 +200,48 @@ class DocumentUploadService:
                 safe_message="文档不存在",
             )
         return document_response(document)
+
+    async def get_content(self, actor: Actor, document_id: UUID) -> DocumentContentResponse:
+        """Parsed source content for the review screen (read-only, HR-only).
+
+        The stored payload is produced by our own parser, but it is still pulled
+        through ``parsed_from_json`` before being re-emitted: a row that drifted
+        from the codec must fail loudly here rather than reach the UI as
+        garbage coordinates that silently mis-highlight evidence.
+        """
+        self._require_hr(actor)
+        document = await self.session.get(ResumeDocument, document_id)
+        if document is None:
+            raise AppError(
+                code="DOCUMENT_NOT_FOUND",
+                http_status=404,
+                safe_message="文档不存在",
+            )
+        if document.parsed_json is None:
+            raise AppError(
+                code="DOCUMENT_NOT_PARSED",
+                http_status=409,
+                safe_message="文档尚未解析完成，暂无可校对正文",
+                details={"status": document.status},
+            )
+        try:
+            payload = parsed_to_json(parsed_from_json(document.parsed_json))
+        except (KeyError, TypeError, ValueError) as error:
+            raise AppError(
+                code="DOCUMENT_CONTENT_UNAVAILABLE",
+                http_status=422,
+                safe_message="解析结果无法还原，请重试解析",
+            ) from error
+        return DocumentContentResponse(
+            document_id=document.id,
+            media_type=payload["media_type"],
+            full_text=payload["full_text"],
+            page_count=payload.get("page_count"),
+            paragraph_count=payload.get("paragraph_count"),
+            table_count=payload.get("table_count"),
+            warnings=list(payload.get("warnings", ())),
+            blocks=payload["blocks"],
+        )
 
     async def _find_duplicate(self, digest: str) -> ResumeDocument | None:
         document: ResumeDocument | None = await self.session.scalar(

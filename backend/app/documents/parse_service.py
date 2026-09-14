@@ -91,7 +91,13 @@ def build_parser_registry(*, parser_version: str) -> dict[str, DocumentParser]:
     }
 
 
-def _parsed_to_dict(parsed: ParsedDocument) -> dict[str, Any]:
+def parsed_to_json(parsed: ParsedDocument) -> dict[str, Any]:
+    """Serialize a ``ParsedDocument`` into the shape stored in ``parsed_json``.
+
+    Public twin of :func:`parsed_from_json`: the review UI reads the stored
+    payload back through the same codec so the transport shape cannot drift from
+    what the parser wrote.
+    """
     blocks: list[dict[str, Any]] = []
     for block in parsed.blocks:
         locator = block.locator
@@ -254,7 +260,7 @@ class DocumentParseService:
             # Storage/IO failure is transient; let Celery retry from scratch.
             raise TransientParseError("STORAGE_UNAVAILABLE", "文件读取失败，请稍后重试") from None
 
-        document.parsed_json = _parsed_to_dict(parsed)
+        document.parsed_json = parsed_to_json(parsed)
         document.parser_version = parser_version
         document.status = DocumentStatus.REVIEW_REQUIRED
         document.retryable = False
