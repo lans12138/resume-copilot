@@ -33,7 +33,11 @@ from backend.app.agent.models import (
     RunStatus,
     RunType,
 )
-from backend.app.agent.repository import AgentRunRepository, InMemoryAgentRunRepository
+from backend.app.agent.repository import (
+    AgentRunRepository,
+    InMemoryAgentRunRepository,
+    SqlAgentRunRepository,
+)
 from backend.app.agent.service import RunService
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
@@ -436,6 +440,9 @@ class _SnapshotAgentRunRepository(AgentRunRepository):
             self._snapshot_events[run_id] = list(self._committed_events.get(run_id, []))
             self._seen.add(run_id)
 
+    async def aclose(self) -> None:
+        return None
+
 
 def test_stream_observes_worker_finish_after_stream_started() -> None:
     """FIN-005 regression: the SSE stream must observe a run the worker finishes
@@ -495,3 +502,45 @@ async def _stream_observes_worker_finish() -> None:
     # The terminal event must have been observed via the heartbeat re-read.
     assert 1 in _sequences(text)
     assert _event_types(text)[-1] == "RUN_COMPLETED"
+
+
+class _FakeSession:
+    """Minimal stand-in so we can assert the factory-mode session lifecycle."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_sql_repo_refresh_for_poll_recreates_session() -> None:
+    """FIN-005: in factory mode ``refresh_for_poll`` must close the current session
+    and open a brand-new one, so the next SSE replay read sees a fresh READ
+    COMMITTED snapshot and observes the worker's commit. This is the mechanism that
+    fixes the recruitment-flow.spec.ts 0-candidates regression; the earlier
+    rollback+expire_all attempt kept the frozen asyncpg snapshot, and the
+    close()-only attempt made the session unusable for the next read.
+    """
+    sessions: list[_FakeSession] = []
+
+    def factory() -> _FakeSession:
+        s = _FakeSession()
+        sessions.append(s)
+        return s
+
+    repo = SqlAgentRunRepository(session_factory=factory)  # type: ignore[arg-type]
+    first: Any = repo._session
+    assert first is sessions[0]
+    assert first.closed is False
+
+    asyncio.run(repo.refresh_for_poll())
+    assert sessions[0].closed is True  # old session returned to the pool
+    cur: Any = repo._session
+    assert cur is sessions[1]  # a fresh session for the next read
+    second: Any = repo._session
+    assert second.closed is False
+    assert len(sessions) == 2
+
+    asyncio.run(repo.aclose())
+    assert sessions[1].closed is True

@@ -36,7 +36,11 @@ async def sse_service(request: Request) -> AsyncGenerator[SseService, None]:
     resources: RuntimeResources = request.app.state.resources
     settings = request.app.state.settings
     async with resources.session_factory() as session:
-        agent_repo = SqlAgentRunRepository(session)
+        # Pass the factory, not a single session: the repository opens a fresh
+        # session on every SSE poll so each replay read sees the worker's latest
+        # commit (§13.2). The JobService session here is only used for the stable
+        # job-access authorization check, so its snapshot does not matter.
+        agent_repo = SqlAgentRunRepository(session_factory=resources.session_factory)
         job_service = JobService(session)
 
         async def authorize_job(actor: Actor, job_id: UUID) -> None:

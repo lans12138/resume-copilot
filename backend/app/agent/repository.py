@@ -20,6 +20,7 @@ Two adapters ship here:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -80,9 +81,13 @@ class AgentRunRepository(Protocol):
         long-lived session the first query opens a transaction whose snapshot is
         frozen for its whole life and ``session.get`` returns the cached instance,
         so commits from the worker would never be observed and the run would never
-        appear to finish. Rolling back + expiring lets the next read see a fresh
-        snapshot. In-memory adapters have no snapshot and are no-ops.
+        appear to finish. In-memory adapters have no snapshot and are no-ops; the
+        SQL adapter closes its session and opens a fresh one (see its docstring).
         """
+        ...
+
+    async def aclose(self) -> None:
+        """Release any open connection; called when the SSE stream terminates."""
         ...
 
 
@@ -174,12 +179,42 @@ class InMemoryAgentRunRepository:
         # No snapshot to drop: the in-memory store always reflects latest state.
         return None
 
+    async def aclose(self) -> None:
+        return None
+
 
 class SqlAgentRunRepository:
-    """PostgreSQL adapter; the sequence increment is a row-locked UPDATE."""
+    """PostgreSQL adapter; the sequence increment is a row-locked UPDATE.
 
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
+    Two session modes:
+
+    * ``session=`` (default) — borrow one session for the whole operation. Used by
+      request handlers and the Celery worker, which own the transaction/commit.
+    * ``session_factory=`` — the SSE stream re-reads the database every heartbeat
+      (§13.2). A single session opened at stream start would freeze its READ
+      COMMITTED snapshot for the whole connection; even ``rollback`` + ``expire_all``
+      is not enough because the underlying asyncpg connection keeps its snapshot
+      until its transaction ends, so a reload through the same connection still saw
+      the worker's pre-completion state. In factory mode ``refresh_for_poll`` closes
+      the session (returning the connection to the pool) and opens a fresh one, so
+      each replay read sees a current snapshot and COMPLETED / RUN_COMPLETED become
+      visible within one heartbeat of the worker's commit.
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession | None = None,
+        *,
+        session_factory: Callable[[], AsyncSession] | None = None,
+    ) -> None:
+        if session_factory is not None:
+            self._factory: Callable[[], AsyncSession] | None = session_factory
+            self._session = session_factory()
+        elif session is not None:
+            self._factory = None
+            self._session = session
+        else:
+            raise TypeError("SqlAgentRunRepository needs session= or session_factory=")
 
     async def save_run(self, run: AgentRun) -> None:
         self._session.add(run)
@@ -269,16 +304,19 @@ class SqlAgentRunRepository:
         return result.scalars().first()
 
     async def refresh_for_poll(self) -> None:
-        # Force the next read to observe work the worker committed since the last
-        # poll (§13.2). Ending the transaction alone is not enough: an asyncpg
-        # connection keeps its READ COMMITTED snapshot until its transaction ends,
-        # and ``session.expire_all()`` only clears the ORM identity map — a reload
-        # after expire would still read the worker's pre-completion state through
-        # the same connection snapshot, so the run would never appear to finish.
-        # Rolling back (if a transaction is open) and closing the session returns
-        # the connection to the pool; the next query checks out a fresh connection
-        # with a current snapshot, so COMPLETED and the RUN_COMPLETED event become
-        # visible to the SSE replay within a single heartbeat.
-        if self._session.in_transaction():
-            await self._session.rollback()
+        # Factory mode only: close the current session (returning its connection to
+        # the pool) and open a brand-new one so the next read starts a fresh READ
+        # COMMITTED transaction with a current snapshot and observes the worker's
+        # committed completion (§13.2). Reusing the same connection — even after
+        # rollback + expire_all — still read the worker's pre-completion state
+        # through the frozen asyncpg snapshot, so the SSE replay never saw COMPLETED
+        # and never emitted the terminal frame (recruitment-flow.spec.ts stayed at 0
+        # candidates). Non-streaming callers (session mode) never invoke this.
+        if self._factory is None:
+            return
         await self._session.close()
+        self._session = self._factory()
+
+    async def aclose(self) -> None:
+        if self._factory is not None:
+            await self._session.close()

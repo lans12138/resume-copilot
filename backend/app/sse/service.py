@@ -120,6 +120,7 @@ class SseService:
                     yield format_heartbeat()
         finally:
             await subscription.aclose()
+            await self._agent_repo.aclose()
 
     async def _authorize_run(self, actor: Actor, run: AgentRun) -> None:
         job_id = self._extract_job_id(run)
