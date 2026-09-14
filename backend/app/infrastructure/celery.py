@@ -57,8 +57,30 @@ def make_celery_app(settings: Settings) -> Celery:
     # discovers documents.parse / embeddings.generate_chunks etc. without a
     # manual import in the worker entrypoint. Imports are lazy (at finalize).
     app.autodiscover_tasks(
-        ["backend.app.documents", "backend.app.candidates", "backend.app.maintenance"]
+        [
+            "backend.app.documents",
+            "backend.app.candidates",
+            "backend.app.maintenance",
+            # FIN-005 / FIN-007 will add tasks.py to these packages. Registering
+            # them now keeps autodiscover forward-compatible with no code change
+            # once those tasks land.
+            "backend.app.agent",
+            "backend.app.evaluations",
+        ]
     )
+
+    # FIN-002: Celery Beat schedules.
+    # - maintenance.expire_approvals runs every minute (Approval timeout sweep, §11.8).
+    # - maintenance.republish_queued (every 5 min) and
+    #   maintenance.cleanup_orphan_files (daily) are wired by FIN-006 once those
+    #   tasks exist; adding them here before then would make beat emit unregistered
+    #   tasks and error. They join this dict when FIN-006 lands.
+    app.conf.beat_schedule = {
+        "expire-pending-approvals": {
+            "task": "maintenance.expire_approvals",
+            "schedule": 60.0,
+        },
+    }
     return app
 
 
