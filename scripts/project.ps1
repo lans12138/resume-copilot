@@ -206,6 +206,7 @@ try {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_compose_stack.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_migrations.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_idempotency.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_worker.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_auth.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
