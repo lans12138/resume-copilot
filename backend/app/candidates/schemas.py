@@ -236,11 +236,16 @@ class EvidenceLocator(BaseModel):
 
 
 class EvidenceChunkCreate(BaseModel):
-    """One verbatim excerpt pinned to a profile + document, from a human reviewer."""
+    """One verbatim excerpt pinned to a profile + document, from a human reviewer.
+
+    ``candidate_profile_id`` is optional on purpose: the route binds the chunk to
+    the profile *in the path* and replaces whatever the body carries, so requiring
+    the body to repeat it only made every well-behaved client fail with a 422.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    candidate_profile_id: UUID
+    candidate_profile_id: UUID | None = None
     document_id: UUID
     chunk_index: int = Field(ge=0, le=10_000)
     section_type: str = Field(min_length=1, max_length=64)

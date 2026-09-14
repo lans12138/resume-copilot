@@ -9,8 +9,11 @@ embedding flow against real Postgres+Redis is the integration test.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
+from backend.app.candidates.schemas import EvidenceChunkCreate, EvidenceLocator
 from backend.app.main import create_app
 from tests.unit.settings_factory import make_settings
 
@@ -48,3 +51,23 @@ def test_profile_endpoints_require_authentication() -> None:
             response = getattr(client, method)(url)
             # Unauthenticated must be rejected before any DB/broker access.
             assert response.status_code in (401, 403), (method, url, response.status_code)
+
+
+def test_evidence_body_does_not_have_to_repeat_the_profile_the_path_owns() -> None:
+    """The path binds the chunk to a profile, so the body must not be forced to.
+
+    Requiring ``candidate_profile_id`` in the body while the route overwrote it with
+    the path value made a correct client's pin request fail with 422 instead of
+    reaching the service.
+    """
+    schemas = create_app(make_settings()).openapi()["components"]["schemas"]
+    assert "candidate_profile_id" not in schemas["EvidenceChunkCreate"]["required"]
+
+    chunk = EvidenceChunkCreate(
+        document_id=uuid4(),
+        chunk_index=0,
+        section_type="技能",
+        locator=EvidenceLocator(kind="docx_paragraph", paragraph_index=1, char_start=0, char_end=6),
+        text="Python",
+    )
+    assert chunk.candidate_profile_id is None

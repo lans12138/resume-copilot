@@ -240,6 +240,15 @@ class ProfileReviewService:
         created: list[EvidenceChunk] = []
         seen_index: set[tuple[UUID, int]] = set()
         for item in chunks:
+            # The route binds each chunk to the profile in the path before calling
+            # this; an unbound chunk means the caller skipped that step, and silently
+            # guessing a profile is exactly the confusion this guard prevents.
+            if item.candidate_profile_id is None:
+                raise app_error(
+                    code="EVIDENCE_PROFILE_REQUIRED",
+                    http_status=422,
+                    safe_message="证据必须绑定到候选人资料",
+                )
             profile = await self._profiles.get(item.candidate_profile_id)
             if profile is None:
                 raise app_error(
