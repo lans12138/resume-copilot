@@ -1,8 +1,21 @@
-import { describe, expect, it } from "vitest"
-import { classifySequence, parseSseBlocks } from "./sse"
+import { describe, expect, it, vi } from "vitest"
+import { classifySequence, connectRunEvents, parseSseBlocks } from "./sse"
 
 const event = (seq: number, status = "RUNNING"): string =>
   `event: STATUS_CHANGED\ndata: ${JSON.stringify({ event_id: `e${seq}`, run_id: "r", run_type: "MATCH", sequence: seq, event_type: "STATUS_CHANGED", node: null, status, message_key: "x", safe_payload: {}, occurred_at: null })}\n\n`
+
+function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
+  let i = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) {
+        controller.enqueue(new TextEncoder().encode(chunks[i++]))
+      } else {
+        controller.close()
+      }
+    },
+  })
+}
 
 describe("parseSseBlocks", () => {
   it("parses a complete event frame into an envelope", () => {
@@ -49,3 +62,46 @@ describe("classifySequence", () => {
     expect(classifySequence(8, 5)).toBe("gap")
   })
 })
+
+describe("connectRunEvents self-heal", () => {
+  it("reconnects and converges on terminal when the stream ends without one", async () => {
+    let calls = 0
+    const fetchMock = vi.fn(async (_url: string, _init: unknown) => {
+      calls += 1
+      if (calls === 1) {
+        // First connection delivers RUN_CREATED then the proxy drops the stream.
+        return new Response(streamOf(["retry: 1000\n\n", event(0, "CREATED")]), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        })
+      }
+      // Reconnect replays and finds the run already COMPLETED.
+      return new Response(streamOf([event(1, "COMPLETED")]), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      })
+    })
+    const onEvent = vi.fn()
+    const onClosed = vi.fn()
+
+    const conn = connectRunEvents("r", {
+      runType: "MATCH",
+      token: "t",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      onEvent,
+      onClosed,
+      maxBackoffMs: 30,
+    })
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 2000 })
+    await vi.waitFor(
+      () => expect(onClosed).toHaveBeenCalledWith("terminal"),
+      { timeout: 2000 },
+    )
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ sequence: 1, status: "COMPLETED" }),
+    )
+    conn.close()
+  })
+})
+

@@ -18,6 +18,16 @@ export function MatchRunPage() {
     queryKey: ["match-run", runId],
     queryFn: () => api.getMatchRun(token, runId),
     enabled: Boolean(runId),
+    // Convergence backstop (FIN-005): the SSE terminal frame drives an instant
+    // refetch via RunTimeline.onTerminal, but if that frame is lost in transit
+    // (proxy buffering, dropped connection), poll until the run reaches a terminal
+    // status so the candidate ranking always appears. Stops polling once terminal.
+    refetchInterval: (query) => {
+      const s = query.state.data?.status
+      const terminal =
+        s === "COMPLETED" || s === "FAILED" || s === "CANCELLED"
+      return terminal ? false : 2000
+    },
   })
   const reportsQuery = useQuery({
     queryKey: ["match-run", runId, "reports"],

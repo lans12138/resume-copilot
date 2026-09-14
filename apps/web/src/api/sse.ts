@@ -169,7 +169,16 @@ export function connectRunEvents(
     try {
       while (!closed) {
         const { value, done } = await reader.read()
-        if (done) break
+        if (done) {
+          // Stream closed without an explicit terminal event (proxy dropped the
+          // connection, network blip). Reconnect: the replay from Last-Event-ID
+          // re-reads PostgreSQL and converges on a terminal status (§13.5). A
+          // terminal-driven stop("terminal") already set closed=true, so this is
+          // a no-op then and we don't loop.
+          if (closed) return
+          scheduleReconnect()
+          return
+        }
         buffer += decoder.decode(value, { stream: true })
         const parsed = parseSseBlocks(buffer)
         buffer = parsed.rest
