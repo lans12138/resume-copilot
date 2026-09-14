@@ -222,9 +222,16 @@ class ProfileReviewService:
         if document is not None and self._documents is not None:
             document.status = DocumentStatus.READY
             await self._documents.save(document)
-        # §7.2: after the profile is confirmed and committed, publish the embedding
-        # task for its evidence chunks. Chunks were persisted in an earlier request,
-        # so a worker picking this up before the route commits sees no gap.
+        # The response is assembled from the very instance this call just mutated,
+        # so the UPDATE has to be flushed (and the server-generated ``updated_at``
+        # re-read) *before* pydantic touches the object: a read of an expired
+        # attribute inside an async session raises MissingGreenlet, not a value.
+        # Flushing first also means the embedding task below can never be published
+        # ahead of the rows it points at.
+        await self._profiles.flush_and_refresh(profile)
+        # §7.2: the embedding task for the profile's evidence chunks is published
+        # once the confirmed rows exist in the transaction. Chunks were persisted in
+        # an earlier request, so a worker picking this up sees no gap.
         if enqueue is not None:
             enqueue.enqueue(profile_id=profile_id)
         return CandidateProfileResponse.model_validate(profile)

@@ -31,6 +31,8 @@ class CandidateRepository(Protocol):
 class CandidateProfileRepository(Protocol):
     async def save(self, profile: CandidateProfile) -> None: ...
 
+    async def flush_and_refresh(self, profile: CandidateProfile) -> None: ...
+
     async def next_version_no(self, candidate_id: UUID) -> int: ...
 
     async def get(self, profile_id: UUID) -> CandidateProfile | None: ...
@@ -78,6 +80,20 @@ class SqlCandidateProfileRepository:
 
     async def save(self, profile: CandidateProfile) -> None:
         self.session.add(profile)
+
+    async def flush_and_refresh(self, profile: CandidateProfile) -> None:
+        """Emit the pending UPDATE and re-read the server-owned columns.
+
+        ``updated_at`` carries ``onupdate=func.now()``, so SQLAlchemy cannot derive
+        the stored value from the statement it generates: after the flush the
+        attribute is expired and the next read would trigger a lazy refresh. In an
+        async session that lazy refresh has no greenlet to await on and raises
+        ``MissingGreenlet`` instead of returning a value — which is what turned a
+        successful confirm into a bare 500. Refreshing here, while the caller is
+        still inside an await, keeps the instance usable for the response model.
+        """
+        await self.session.flush()
+        await self.session.refresh(profile)
 
     async def next_version_no(self, candidate_id: UUID) -> int:
         current = await self.session.scalar(

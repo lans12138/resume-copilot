@@ -208,18 +208,36 @@ async def _confirm(
             SqlEvidenceChunkRepository(session),
             SqlAlchemyDocumentRepository(session),
         )
-        await service.confirm_profile(
+        result = await service.confirm_profile(
             actor=actor,
             profile_id=profile_id,
+            # A realistic reviewer edit, deliberately not a pass-through. Handing
+            # back the values already stored leaves every column equal, so the
+            # profile is flushed without a real change and the route's failure mode
+            # — a post-flush read of the expired, server-generated ``updated_at``
+            # inside an async session — stays invisible. The reviewer here fills the
+            # years the extractor left unset and corrects the skill list.
             edit=CandidateProfileEdit(
-                profile_json=profile.profile_json,
-                normalized_skills=list(profile.normalized_skills),
-                education_level=profile.education_level,
+                profile_json={
+                    **profile.profile_json,
+                    "full_name": "张伟",
+                    "education_level": None,
+                },
+                normalized_skills=["python", "fastapi", "postgresql"],
+                years_experience=6.0,
+                education_level=None,
             ),
             expected_version=profile.version,
             enqueue=_RecordingEmbeddingEnqueuer(),
         )
         await session.commit()
+    # The response is built from the mutated instance, so these assertions run on
+    # the same attribute reads that used to raise MissingGreenlet.
+    assert result.status is CandidateProfileStatus.READY
+    assert result.years_experience == 6.0
+    assert result.normalized_skills == ["fastapi", "postgresql", "python"]
+    assert result.version == 2
+    assert result.confirmed_at is not None
 
 
 async def _run_pipeline() -> None:

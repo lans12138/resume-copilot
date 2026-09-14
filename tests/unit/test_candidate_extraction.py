@@ -196,6 +196,12 @@ class FakeProfileRepository:
     async def save(self, profile: CandidateProfile) -> None:
         self.saved.append(profile)
 
+    async def flush_and_refresh(self, profile: CandidateProfile) -> None:
+        # Part of the CandidateProfileRepository contract; see
+        # tests/unit/test_evidence_and_profile_review.py for why the fake cannot
+        # reproduce the post-flush expiry the real adapter works around.
+        return None
+
     async def next_version_no(self, candidate_id: UUID) -> int:
         current = max(
             (p.version_no for p in self.saved if p.candidate_id == candidate_id),

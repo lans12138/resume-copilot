@@ -72,6 +72,14 @@ class FakeCandidateProfileRepository:
     async def save(self, profile: CandidateProfile) -> None:
         self.profiles[profile.id] = profile
 
+    async def flush_and_refresh(self, profile: CandidateProfile) -> None:
+        # The real adapter flushes and re-reads the server-generated ``updated_at``
+        # because SQLAlchemy expires it on flush and the next read would raise
+        # MissingGreenlet in an async session. This fake hands back the caller's own
+        # object, so the expiry cannot be reproduced here; the real-database
+        # behaviour is pinned by tests/integration/test_document_pipeline_e2e.py.
+        return None
+
     async def next_version_no(self, candidate_id: UUID) -> int:
         return 1
 

@@ -207,6 +207,15 @@ class _FakeProfileRepository:
     async def save(self, profile: CandidateProfile) -> None:
         self._profile = profile
 
+    async def flush_and_refresh(self, profile: CandidateProfile) -> None:
+        # The real adapter exists because SQLAlchemy expires the server-generated
+        # ``updated_at`` on flush and a later read then raises MissingGreenlet in an
+        # async session. An in-memory fake keeps the caller's own object, so there is
+        # nothing to re-read — the hazard simply cannot be reproduced here. The
+        # behaviour that needs the real database is pinned by
+        # ``tests/integration/test_document_pipeline_e2e.py``.
+        return None
+
     async def next_version_no(self, candidate_id: UUID) -> int:
         return 1
 
