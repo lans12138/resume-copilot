@@ -269,9 +269,16 @@ class SqlAgentRunRepository:
         return result.scalars().first()
 
     async def refresh_for_poll(self) -> None:
-        # Close the open transaction (if any) so the next statement starts a new
-        # one with a fresh READ COMMITTED snapshot, then expire the identity map
-        # so cached ORM instances are re-selected instead of returned from cache.
+        # Force the next read to observe work the worker committed since the last
+        # poll (§13.2). Ending the transaction alone is not enough: an asyncpg
+        # connection keeps its READ COMMITTED snapshot until its transaction ends,
+        # and ``session.expire_all()`` only clears the ORM identity map — a reload
+        # after expire would still read the worker's pre-completion state through
+        # the same connection snapshot, so the run would never appear to finish.
+        # Rolling back (if a transaction is open) and closing the session returns
+        # the connection to the pool; the next query checks out a fresh connection
+        # with a current snapshot, so COMPLETED and the RUN_COMPLETED event become
+        # visible to the SSE replay within a single heartbeat.
         if self._session.in_transaction():
             await self._session.rollback()
-        self._session.expire_all()
+        await self._session.close()
