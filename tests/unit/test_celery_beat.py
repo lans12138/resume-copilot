@@ -13,6 +13,15 @@ def test_beat_schedule_registers_expire_approvals() -> None:
 
 
 def test_autodiscover_registers_existing_task_modules() -> None:
+    # Importing the task modules registers their @shared_task callbacks on the
+    # current app. The Celery worker does this during boot, *before* finalize,
+    # so finalize() can bind the tasks to the freshly built app. Without this
+    # pre-import, autodiscovery defers module loading until inside finalize(),
+    # which is too late for the callbacks to attach to this app instance.
+    import backend.app.candidates.tasks  # noqa: F401
+    import backend.app.documents.tasks  # noqa: F401
+    import backend.app.maintenance.tasks  # noqa: F401
+
     app = make_celery_app(make_settings())
     # Finalize triggers task collection without starting a worker.
     app.finalize()
