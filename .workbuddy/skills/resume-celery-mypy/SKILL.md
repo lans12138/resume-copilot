@@ -1,7 +1,7 @@
 ---
 name: resume-celery-mypy
 agent_created: true
-description: resume-copilot 后端（FastAPI+SQLAlchemy2+Celery+pgvector）交付前的本地验证与依赖收敛工作流。当新增/修改 Celery 任务（尤其 agent Run 类任务）、引入新 pip 依赖、或跑 mypy/ruff/pytest/探针验证改动时使用；也覆盖本项目反复出现的 mypy strict 报错套路（celery 无 py.typed、SQLAlchemy scalar 返回 Any、变量函数同名、Protocol 假对象签名）、at-least-once Run 任务的「认领而非执行」模式，以及 PS 5.1 的 ANSI 解码双坑（读文档 + 语法校验）。
+description: resume-copilot 后端（FastAPI+SQLAlchemy2+Celery+pgvector）交付前的本地验证与依赖收敛工作流。当新增/修改 Celery 任务（尤其 agent Run 类任务）、引入新 pip 依赖、或跑 mypy/ruff/pytest/探针验证改动时使用；也覆盖本项目反复出现的 mypy strict 报错套路（celery 无 py.typed、SQLAlchemy scalar 返回 Any、变量函数同名、Protocol 假对象签名）、at-least-once Run 任务的「认领而非执行」模式、PS 5.1 的 ANSI 解码双坑（读文档 + 语法校验），以及 GitHub 推送凭据与 CI 读取（GCM 挂死、仓库局部 store helper、Actions run 查询）的排查。
 ---
 
 # Resume Copilot - 交付前验证与依赖收敛
@@ -284,3 +284,47 @@ print({k: v for k, v in defs.items() if len(v) > 1})
 - HTTP 层：`commit` 业务事实**之后**再发布任务，发布失败**只记 warning、不让请求变 5xx**（§14.4）。`CREATED` 同时表示「已入队」和「未投递」，由维护任务扫描重投。
 - 重投是安全的：认领会拒绝正在执行中的 run，所以「多投一次」不会变成第二次执行。
 - 派生的行（候选人快照、证据报告及其子表）**整批替换**，不追加。报告子表 FK 没有 `ON DELETE CASCADE`，要按子→父顺序显式删。
+
+## GitHub 推送凭据与 CI 读取（2026-09-14 定型）
+
+**结论先行：本项目不走 Git Credential Manager。** 本机 global `credential.helper` 是 PortableGit 自带的 GCM 2.9.0，它在没有有效凭据（以及某些其它状态下）会**挂死等一个不会出现的 GUI 窗口**，`GCM_INTERACTIVE=never` / `GCM_GUI=false` 都拦不住。表现为 `timeout 25 git push ...` → **exit 124、输出 0 字节**。
+
+### 配置（仓库局部，不动 global）
+
+```bash
+printf 'https://x-access-token:%s@github.com\n' "$TOKEN" > .git/gh-credentials
+chmod 600 .git/gh-credentials
+git config --local credential.helper ''                 # 空值 = 把 global 的 GCM 清出 helper 链
+git config --local --add credential.helper 'store --file=<abs>/.git/gh-credentials'
+```
+
+**两条缺一不可**：只加 store 不写空值，git 仍会先问 GCM 然后挂。凭据明文存在 `.git/` 内（不会被提交，但会随 `.git` 目录被拷贝）。
+
+### 日常三条命令
+
+```bash
+# 取 token 给 REST API 用
+T=$(cut -d: -f3 .git/gh-credentials | cut -d@ -f1)
+
+# 读 CI（注意 head_sha 过滤不稳定，拉列表自己筛）
+curl -sS -H "Authorization: Bearer $T" -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/lans12138/resume-copilot/actions/runs?per_page=5"
+
+# 真验写权限（--dry-run 到已有 ref 且 up-to-date 时根本不做认证，是假成功）
+git push --dry-run origin HEAD:refs/heads/_cred_probe
+```
+
+### 四个把人带偏的假象
+
+| 假象 | 真相 |
+|---|---|
+| `git push ... \| tail -8; echo $?` 得到 `exit 0`，以为「静默失败」 | `$?` 是 **`tail`** 的，恒 0。push 一律 `> log 2>&1` 落盘再读 |
+| `git credential fill` 能拿 token | **不可靠**，同一命令连续三次得 `93 / 0 / 0` 字符 |
+| `sed 's#^https://x-access-token:/(.*/)@github.com$#/1#p'` 提取凭据 | 返回**空串** → curl 401 → 误以为 token 坏了。用 **`cut -d: -f3 \| cut -d@ -f1`** |
+| `git push --dry-run` 成功 = 写权限 OK | up-to-date 时**不做认证**。要推**新 ref** 才算验过 |
+
+附：**Windows 原生 curl 不认 Git Bash 的 `/tmp`**（`-o /tmp/x.json` → `curl: (23) client returned ERROR on write`）。要么管道给 python 读 stdin，要么给 Windows 路径。
+
+### token 权限（够用到 FIN-013）
+
+Contents RW（push / tag / release）、**Workflows RW**（改 `.github/workflows/*.yml` 时必须，缺则含该改动的 push 被 GitHub **整条拒绝**，FIN-012 必踩）、Actions RW（读 job 日志 / 重跑 / 取消）、Metadata R；另附 Pull requests RW、Variables RW。不给 Secrets——真实模型 key 在网页手配。
