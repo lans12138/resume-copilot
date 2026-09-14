@@ -52,3 +52,31 @@
 .upload-outcomes li{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;font-size:.82rem}
 .upload-outcomes small{color:#5c6862;font-weight:500}
 td small{display:block;color:var(--muted);font-weight:500}
+
+/* FIN-004 profile review: source locator viewer, evidence list, profile form. */
+.review-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(22rem,.65fr);gap:1rem;align-items:start}
+.review-source{position:sticky;top:5.5rem}
+.review-side{display:flex;flex-direction:column;gap:1rem}
+.source-body{max-height:34rem;overflow-y:auto;padding-right:.35rem}
+.source-group{margin-bottom:1.1rem}
+.source-group-title{position:sticky;top:0;z-index:1;margin:0 0 .5rem;padding:.3rem 0;background:var(--paper);color:var(--muted);font-size:.76rem;letter-spacing:.08em;text-transform:uppercase}
+.source-block{display:flex;flex-direction:column;gap:.35rem;margin:0 0 .5rem;padding:.55rem .7rem;border:1px solid transparent;border-left:3px solid var(--line);border-radius:.2rem .6rem .6rem .2rem;background:#f7f8f4;line-height:1.75;color:#33413b}
+.source-block.is-active{border-color:#8fae9f;border-left-color:var(--green);background:#eef2e6}
+.source-block.has-evidence{border-left-color:#9cab8e}
+.source-block:focus{outline:3px solid #91b5a9;outline-offset:2px}
+.source-text{white-space:pre-wrap}
+.source-block-actions{display:flex;gap:.45rem;align-items:center;justify-content:flex-end}
+.source-block-actions .button{opacity:0;transition:opacity .15s}
+.source-block:hover .source-block-actions .button,.source-block:focus-within .source-block-actions .button,.source-block-actions .button:focus-visible{opacity:1}
+mark.quote{border-radius:.2rem;background:#d9ee8c;color:#26361f;padding:0 .12rem}
+.pin-bar{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.4rem 0 1rem;padding:.7rem .9rem;border:1px solid #bcd0c3;border-radius:.7rem;background:#eef1e8;font-size:.84rem}
+.pin-bar label{font-weight:700}
+.pin-bar select{width:auto;min-width:7rem;padding:.45rem .6rem}
+.evidence-list{display:flex;flex-direction:column;gap:.7rem;margin:0;padding:0;list-style:none}
+.evidence-item{border:1px solid var(--line);border-radius:.7rem;padding:.7rem .85rem;background:var(--paper)}
+.evidence-item.is-active{border-color:#8fae9f;background:#f2f5ec}
+.evidence-head{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:.45rem}
+.evidence-head small{color:var(--muted)}
+.evidence-head .button{margin-left:auto}
+.profile-panel{margin-top:0}
+@media(max-width:900px){.review-grid{grid-template-columns:1fr}.review-source{position:static}.source-body{max-height:none}}
