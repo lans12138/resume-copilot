@@ -1,3 +1,4 @@
+import { useEffect } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { api, ApiError } from "../api/client"
@@ -33,6 +34,19 @@ export function MatchRunPage() {
     queryKey: ["match-run", runId, "reports"],
     queryFn: () => api.getReports(token, runId),
     enabled: Boolean(runId),
+    // The worker persists evidence-backed reports in the same commit as the
+    // COMPLETED run (IMP-020), but this query first fires on mount while the run
+    // is still CREATED and caches an empty list. Poll until the run is terminal
+    // so the evidence panel converges onto the generated reports (FIN-005
+    // backstop). Stops once terminal, and the effect below forces one final
+    // refetch at the terminal transition so the panel is never left on a stale
+    // empty list if the last poll tick landed before the commit.
+    refetchInterval: (query) => {
+      const run = queryClient.getQueryData<{ status: string }>(["match-run", runId])
+      const s = run?.status
+      const terminal = s === "COMPLETED" || s === "FAILED" || s === "CANCELLED"
+      return terminal ? false : 2000
+    },
   })
   const retry = useMutation({ mutationFn: () => api.retryMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
   const cancel = useMutation({ mutationFn: () => api.cancelMatchRun(token, runId), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["match-run", runId] }) })
@@ -57,6 +71,13 @@ export function MatchRunPage() {
   if (!run) return null
   const status = run.status as RunStatus
   const terminal = status === "COMPLETED" || status === "FAILED" || status === "CANCELLED"
+
+  // When the run reaches a terminal state the reports may have just been
+  // committed; force one refetch so the evidence panel shows them even if the
+  // last poll tick landed before the commit (FIN-005 convergence backstop).
+  useEffect(() => {
+    if (terminal) reportsQuery.refetch()
+  }, [terminal, reportsQuery.refetch])
 
   return (
     <section>
