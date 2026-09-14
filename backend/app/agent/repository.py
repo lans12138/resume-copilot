@@ -73,6 +73,18 @@ class AgentRunRepository(Protocol):
         """Fetch one event by (run_id, sequence); None if it does not belong here."""
         ...
 
+    async def refresh_for_poll(self) -> None:
+        """Release the frozen transaction/identity-map snapshot before a poll read.
+
+        The SSE stream re-reads PostgreSQL every heartbeat (§13.2). Under a
+        long-lived session the first query opens a transaction whose snapshot is
+        frozen for its whole life and ``session.get`` returns the cached instance,
+        so commits from the worker would never be observed and the run would never
+        appear to finish. Rolling back + expiring lets the next read see a fresh
+        snapshot. In-memory adapters have no snapshot and are no-ops.
+        """
+        ...
+
 
 class InMemoryAgentRunRepository:
     """Lock-guarded in-process store; sequence is atomic under concurrency."""
@@ -157,6 +169,10 @@ class InMemoryAgentRunRepository:
                 if event.run_id == run_id and event.sequence == sequence:
                     return event
             return None
+
+    async def refresh_for_poll(self) -> None:
+        # No snapshot to drop: the in-memory store always reflects latest state.
+        return None
 
 
 class SqlAgentRunRepository:
@@ -251,3 +267,11 @@ class SqlAgentRunRepository:
             )
         )
         return result.scalars().first()
+
+    async def refresh_for_poll(self) -> None:
+        # Close the open transaction (if any) so the next statement starts a new
+        # one with a fresh READ COMMITTED snapshot, then expire the identity map
+        # so cached ORM instances are re-selected instead of returned from cache.
+        if self._session.in_transaction():
+            await self._session.rollback()
+        self._session.expire_all()

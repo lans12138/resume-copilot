@@ -21,11 +21,18 @@ Covered:
 from __future__ import annotations
 
 import asyncio
+import types as _types
 from typing import Any
 from uuid import UUID, uuid4
 
 from backend.app.agent.checkpoint import InMemoryCheckpointer
-from backend.app.agent.models import AgentEventType, AgentRun, RunStatus, RunType
+from backend.app.agent.models import (
+    AgentEvent,
+    AgentEventType,
+    AgentRun,
+    RunStatus,
+    RunType,
+)
 from backend.app.agent.repository import InMemoryAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.models import UserRole
@@ -332,3 +339,131 @@ def test_redis_subscription_wait_returns_within_timeout_when_pubsub_silent() -> 
     sub = _RedisSubscription(_FakeRedis(), "run:abc")
     # wait must return inside the bound; the outer wait_for fails the test if it does not.
     asyncio.run(asyncio.wait_for(sub.wait(0.2), timeout=1.0))
+
+
+# --------------------------------------------------------------------------- #
+# Frozen-snapshot simulation: proves the FIN-005 SSE regression fix.
+# --------------------------------------------------------------------------- #
+class _SnapshotAgentRunRepository:
+    """Simulates PostgreSQL READ COMMITTED over a long-lived session.
+
+    A background writer mutates the *committed* state; the reader only observes
+    it after ``refresh_for_poll`` advances the per-session snapshot. Without that
+    call the stream is pinned to the initial snapshot and never sees the run
+    finish — exactly the e2e regression (zero candidates, stream never delivers
+    the terminal frame, browser never refetches).
+    """
+
+    def __init__(self) -> None:
+        self._config: dict[UUID, dict] = {}
+        self._committed_status: dict[UUID, RunStatus] = {}
+        self._committed_events: dict[UUID, list[AgentEvent]] = {}
+        self._snapshot_status: dict[UUID, RunStatus] = {}
+        self._snapshot_events: dict[UUID, list[AgentEvent]] = {}
+        self._seen: set[UUID] = set()
+
+    def add_run(self, run: AgentRun) -> None:
+        self._config[run.id] = run.config_snapshot_json or {}
+        self._committed_status[run.id] = run.status
+        self._committed_events.setdefault(run.id, [])
+
+    def commit_status(self, run_id: UUID, status: RunStatus) -> None:
+        self._committed_status[run_id] = status
+
+    def commit_event(self, event: AgentEvent) -> None:
+        self._committed_events.setdefault(event.run_id, []).append(event)
+
+    def _advance(self, run_id: UUID) -> None:
+        if run_id not in self._seen:
+            self._snapshot_status[run_id] = self._committed_status[run_id]
+            self._snapshot_events[run_id] = list(self._committed_events.get(run_id, []))
+            self._seen.add(run_id)
+
+    async def get_run(self, run_id: UUID):
+        if run_id not in self._config:
+            return None
+        self._advance(run_id)
+        return _types.SimpleNamespace(
+            status=self._snapshot_status[run_id],
+            config_snapshot_json=self._config[run_id],
+        )
+
+    async def list_events_after(self, run_id: UUID, last_sequence: int, limit: int):
+        self._advance(run_id)
+        ordered = sorted(
+            (e for e in self._snapshot_events.get(run_id, []) if e.sequence > last_sequence),
+            key=lambda e: e.sequence,
+        )
+        return ordered[:limit]
+
+    async def get_event_by_sequence(self, run_id: UUID, sequence: int):
+        for event in self._committed_events.get(run_id, []):
+            if event.sequence == sequence:
+                return event
+        return None
+
+    async def refresh_for_poll(self) -> None:
+        for run_id in list(self._committed_status):
+            self._snapshot_status[run_id] = self._committed_status[run_id]
+            self._snapshot_events[run_id] = list(self._committed_events.get(run_id, []))
+            self._seen.add(run_id)
+
+
+def test_stream_observes_worker_finish_after_stream_started() -> None:
+    """FIN-005 regression: the SSE stream must observe a run the worker finishes
+    *after* the stream opened, even when the publish is never delivered (forcing
+    the §13.2 heartbeat re-read). Under a frozen snapshot the finish would be
+    invisible and the browser would never refetch candidates.
+    """
+    asyncio.run(_stream_observes_worker_finish())
+
+
+async def _stream_observes_worker_finish() -> None:
+    notifier = InMemoryEventNotifier()  # intentionally silent: lost-publish path
+    repo = _SnapshotAgentRunRepository()
+
+    run_id = uuid4()
+    job_id = uuid4()
+    run = AgentRun(
+        id=run_id,
+        run_type=RunType.MATCH,
+        thread_id=run_id.hex,
+        status=RunStatus.RUNNING,
+        config_snapshot_json={"job_id": str(job_id)},
+    )
+    repo.add_run(run)
+
+    async def authorize_job(actor: Actor, job_id_: UUID) -> None:
+        return None
+
+    svc = SseService(
+        repo,
+        authorize_job,
+        notifier,
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+
+    gen = svc.stream(_actor(), run_id, -1)
+    task = asyncio.create_task(_drain(gen, 0.5))
+    await asyncio.sleep(0.02)  # first batch (RUNNING) sent, now polling on heartbeat
+    # Worker finishes AFTER the stream started; notifier stays silent.
+    repo.commit_event(
+        AgentEvent(
+            run_id=run_id,
+            run_type=RunType.MATCH,
+            sequence=1,
+            event_type=AgentEventType.RUN_COMPLETED,
+            node=None,
+            status=RunStatus.COMPLETED.value,
+            message_key="r.done",
+            safe_payload_json={},
+        )
+    )
+    repo.commit_status(run_id, RunStatus.COMPLETED)
+
+    text = await task
+    # The terminal event must have been observed via the heartbeat re-read.
+    assert 1 in _sequences(text)
+    assert _event_types(text)[-1] == "RUN_COMPLETED"

@@ -86,6 +86,11 @@ class SseService:
         subscription = self._notifier.subscribe(run_id)
         try:
             while True:
+                # Drop the frozen transaction/identity-map snapshot from the prior
+                # iteration so this read sees data the worker committed since the
+                # last poll (§13.2: the heartbeat re-read must observe the finish).
+                await self._agent_repo.refresh_for_poll()
+
                 # Continuous authorization before every batch (§13.4).
                 try:
                     run = await self._agent_repo.get_run(run_id)
