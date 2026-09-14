@@ -16,8 +16,22 @@ $previousProxyTarget = $env:VITE_API_PROXY_TARGET
 
 function Invoke-Docker {
     param([Parameter(Mandatory)][string[]] $Arguments)
-    $output = & docker @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Merge native stderr as data, not as a terminating error. Under Windows
+    # PowerShell 5.1 every stderr line of a native command that is merged with
+    # ``2>&1`` becomes an ErrorRecord, and ``$ErrorActionPreference = 'Stop'``
+    # then aborts the probe mid-build (docker writes its build progress to
+    # stderr). Scoping the preference keeps the failure contract below intact
+    # while behaving identically under pwsh.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & docker @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0) {
         throw "Docker command failed: docker $($Arguments -join ' ')`n$($output -join "`n")"
     }
     return @($output | ForEach-Object { $_.ToString() })
@@ -55,6 +69,9 @@ try {
         'api', 'python', '-m', 'backend.app.auth.bootstrap'
     ))
     [void] (Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'api'))
+    # The browser flow uploads a synthetic resume and waits for it to be parsed, so
+    # the worker that consumes documents.parse has to be part of this stack.
+    [void] (Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'worker'))
 
     Push-Location $webDirectory
     try {
@@ -63,7 +80,33 @@ try {
     }
     finally { Pop-Location }
 
-    Write-Output 'WEB_VALIDATION_OK browser=chromium flow=login-match-application-dual-approval-interview storage=session-only'
+    Write-Output 'WEB_VALIDATION_OK browser=chromium flow=login-match-application-dual-approval-interview flow=upload-review-readiness storage=session-only'
+}
+catch {
+    # A browser failure is usually an API-side 500, and the stack trace only lives
+    # in the detached container's log, which the ``finally`` block below destroys.
+    # Dump it here or the next debugging round starts blind — which is exactly how
+    # the confirm-with-evidence failure was first reported as a bare 500.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $logs = @('compose', '--project-name', $projectName, '--env-file', $envFile,
+            '--file', $composeFile, '--file', $composeOverride)
+        Write-Host '--- compose logs: api, worker (tail 120, context only) ---'
+        & docker @logs logs --no-color --tail 120 api worker 2>&1 |
+            ForEach-Object { $_.ToString() } | Out-Host
+        # The traceback is far above any useful tail: a full browser run emits
+        # thousands of request lines, so search the whole log for the handler that
+        # logged the failure instead of guessing a bigger window.
+        Write-Host '--- compose logs: unhandled exceptions in the whole run ---'
+        & docker @logs logs --no-color --no-log-prefix api worker 2>&1 |
+            Select-String -Pattern 'unhandled_exception' -SimpleMatch |
+            ForEach-Object { $_.Line } | Out-Host
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    throw
 }
 finally {
     & docker compose --project-name $projectName --env-file $envFile --file $composeFile --file $composeOverride --profile tools down --volumes --remove-orphans --timeout 15 | Out-Host
