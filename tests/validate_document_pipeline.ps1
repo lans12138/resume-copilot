@@ -15,8 +15,22 @@ $storageRoot = '/tmp/resume-pipeline-e2e'
 
 function Invoke-Docker {
     param([Parameter(Mandatory)][string[]] $Arguments)
-    $output = & docker @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    # Merge native stderr as data, not as a terminating error. Under Windows
+    # PowerShell 5.1 every stderr line of a native command that is merged with
+    # ``2>&1`` becomes an ErrorRecord, and ``$ErrorActionPreference = 'Stop'``
+    # then aborts the probe mid-build (docker writes its build progress to
+    # stderr). Scoping the preference keeps the failure contract below intact
+    # while behaving identically under pwsh.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & docker @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    if ($exitCode -ne 0) {
         throw "Docker command failed: docker $($Arguments -join ' ')`n$($output -join "`n")"
     }
     return @($output | ForEach-Object { $_.ToString() })
