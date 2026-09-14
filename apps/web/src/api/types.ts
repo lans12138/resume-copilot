@@ -287,7 +287,27 @@ export interface DocumentBatchAccepted {
   rejected: number
 }
 
-export interface ParsedBlockView { block_index: number; text: string; locator: Record<string, unknown> }
+// A locator is the parser's own coordinates back into the source file. The union
+// mirrors backend/app/candidates/schemas.py EvidenceLocator so the review screen
+// can highlight by structure instead of digging through an untyped blob.
+//
+// Blocks come from the parser and are re-validated on read, so their locator is
+// trustworthy. Evidence chunks are not: the response declares `dict[str, Any]`
+// and the demo seed writes its own shape (`{"page", "bbox"}`), so a chunk's
+// locator must be narrowed at runtime before it is displayed.
+export type EvidenceLocator =
+  | { kind: "pdf"; page_number: number; block_index: number; char_start: number; char_end: number }
+  | { kind: "docx_paragraph"; paragraph_index: number; char_start: number; char_end: number }
+  | {
+      kind: "docx_table"
+      table_index: number
+      row_index: number
+      cell_index: number
+      char_start: number
+      char_end: number
+    }
+
+export interface ParsedBlockView { block_index: number; text: string; locator: EvidenceLocator }
 
 export interface DocumentContent {
   document_id: string
@@ -326,7 +346,8 @@ export interface EvidenceChunk {
   candidate_profile_id: string
   chunk_index: number
   section_type: string
-  locator_json: Record<string, unknown>
+  /** Server contract is `dict[str, Any]`; narrow with `parseLocator` before use. */
+  locator_json: unknown
   text: string
   text_sha256: string
   created_at: string
@@ -336,7 +357,7 @@ export interface EvidenceChunkInput {
   document_id: string
   chunk_index: number
   section_type: string
-  locator: Record<string, unknown>
+  locator: EvidenceLocator
   text: string
 }
 
