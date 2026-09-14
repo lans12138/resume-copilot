@@ -17,7 +17,13 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   await expect(page).toHaveURL(/\/match-runs\/[0-9a-f-]+$/)
   await expect(page.getByRole("heading", { name: "批量匹配分析" })).toBeVisible()
   const ranking = page.getByRole("region", { name: "候选人排名" })
-  await expect(ranking.getByRole("button", { name: "启动单人流程" })).toHaveCount(5)
+  // A floor, not an equality: the specs share one seeded database, and
+  // document-review.spec.ts sorts first and confirms a resume of its own, so the
+  // demo job's ranking legitimately grows past the five seeded candidates. What
+  // this test means is "the seeded pool is in the ranking", which is what it asserts.
+  await expect
+    .poll(() => ranking.getByRole("button", { name: "启动单人流程" }).count())
+    .toBeGreaterThanOrEqual(5)
   const reports = page.getByRole("region", { name: "证据化报告" })
   await expect(reports.getByText("Candidate report").first()).toBeVisible()
   await expect(reports.getByText("证据不足", { exact: true }).first()).toBeVisible()

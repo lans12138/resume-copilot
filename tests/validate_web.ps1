@@ -75,6 +75,18 @@ try {
 
     Push-Location $webDirectory
     try {
+        # Playwright clears its own output directory on start, but that clear can be
+        # refused as a bulk delete once a few runs have accumulated (measurements,
+        # traces and screenshots land there per failure), and the refusal then shows
+        # up inside the Playwright run itself. Clearing first keeps the run clean;
+        # it is best-effort because the same refusal must never fail the probe.
+        try {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue `
+                (Join-Path $webDirectory 'test-results'), (Join-Path $webDirectory 'playwright-report')
+        }
+        catch {
+            Write-Host "Could not clear the previous Playwright artefacts: $($_.Exception.Message)"
+        }
         & npm run e2e
         if ($LASTEXITCODE -ne 0) { throw "Playwright failed with exit code $LASTEXITCODE" }
     }
