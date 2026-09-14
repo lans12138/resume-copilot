@@ -1,7 +1,7 @@
 ---
 name: resume-celery-mypy
 agent_created: true
-description: resume-copilot 后端（FastAPI+SQLAlchemy2+Celery+pgvector）交付前的本地验证与依赖收敛工作流。当新增/修改 Celery 任务、引入新 pip 依赖、或跑 mypy/ruff/pytest 验证改动时使用；也覆盖本项目反复出现的 mypy strict 报错套路（celery 无 py.typed、SQLAlchemy scalar 返回 Any、变量函数同名、Protocol 假对象签名）。
+description: resume-copilot 后端（FastAPI+SQLAlchemy2+Celery+pgvector）交付前的本地验证与依赖收敛工作流。当新增/修改 Celery 任务（尤其 agent Run 类任务）、引入新 pip 依赖、或跑 mypy/ruff/pytest/探针验证改动时使用；也覆盖本项目反复出现的 mypy strict 报错套路（celery 无 py.typed、SQLAlchemy scalar 返回 Any、变量函数同名、Protocol 假对象签名）、at-least-once Run 任务的「认领而非执行」模式，以及 PS 5.1 的 ANSI 解码双坑（读文档 + 语法校验）。
 ---
 
 # Resume Copilot - 交付前验证与依赖收敛
@@ -15,7 +15,7 @@ description: resume-copilot 后端（FastAPI+SQLAlchemy2+Celery+pgvector）交�
 ### 用 `envs/fin003`，不要用 `envs/default`
 
 - **可用**：`C:\Users\lanqi\.workbuddy\binaries\python\envs\fin003\`（SQLAlchemy 2.0.52、mypy 1.20.2、
-  ruff、pytest 齐全；2026-09-14 实测 `mypy backend apps tests/unit` → 178 files clean）。
+  ruff、pytest 齐全；2026-09-14 实测 `mypy backend apps tests/unit` → 183 files clean）。
 - **已损坏**：`envs/default`——`import sqlalchemy` 抛 `cannot import name 'getcurrent' from 'greenlet'`，
   mypy 报 `No module named 'mypy.__main__'`。别用它，也别试图修它。
 
@@ -29,7 +29,7 @@ Windows Git Bash 里用正斜杠：`/c/Users/lanqi/.workbuddy/binaries/python/en
 
 ```bash
 cd /d/code && /c/Users/lanqi/.workbuddy/binaries/python/envs/fin003/Scripts/python.exe \
-  -m pytest resume/tests/unit -q          # → 276 passed
+  -m pytest resume/tests/unit -q          # → 302 passed
 ```
 
 等价的替代方案是 Docker 开发镜像（与 CI 同构）。改动涉及真 PostgreSQL/Redis 的探针时反正要走镜像，
@@ -55,6 +55,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\validate_web.ps1
 | 探针 | 本机 | 说明 |
 |---|---|---|
 | `validate_document_pipeline.ps1` | ✅ | 真 PostgreSQL+Redis 跑 `tests/integration/test_document_pipeline_e2e.py` |
+| `validate_application_entry.ps1` | ✅ | 需要 Docker；FIN-005 起会起 **api + worker**，跑完整 MatchRun（含异步等待与重试）+ 双审批链路 |
+| `validate_worker.ps1` | ✅ | 需要 Docker；Worker/Beat 消费 Redis 任务 |
 | `validate_web.ps1` | ✅ | Playwright 三条主路径 |
 | `validate_documents.ps1` | ✅ | 2026-09-14 起修好了编码，本机可跑，输出与 CI 逐项一致 |
 | `project.ps1 verify` | ❌ | 内部 `Invoke-Checked 'pwsh'`，本机无该可执行文件 |
@@ -67,6 +69,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\validate_web.ps1
 
 排查这类「本机说文档坏了、CI 说没事」的问题时，先怀疑编码：用 `python` 按字节统计一遍
 （如 `open(p,'rb').read().decode('utf-8')` 后数 `^~~~` 行），别信 ANSI 解码下的行结构。
+
+**同一个坑在语法校验上会再咬一口**：PS 5.1 的 `[Parser]::ParseFile()` 也按 ANSI 读文件，于是改了
+含中文的探针后，它会在一堆**早已存在、CI 长期绿**的行上报语法错，错误信息里还会出现 `'”。` 这种
+半截残字。看到「报错行全是自己没碰过的老代码」就别改代码，换姿势（先显式解码再解析）：
+
+```ps
+$path = 'D:\code\resume\tests\validate_application_entry.ps1'
+$text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseInput($text, $path, [ref]$null, [ref]$errors)
+if ($errors) { $errors | % { 'PARSE ERROR line ' + $_.Extent.StartLineNumber + ': ' + $_.Message } } else { 'PARSE_OK' }
+```
+
+配套两个操作细节：本机 PS 工具**完全不回显 stdout**（`Write-Output "hello"` 也是空的），必须
+`| Out-File -FilePath <工作区内路径> -Encoding utf8` 再读文件（写到工作区**之外**会被沙箱拦住，
+表现为「命令成功但文件不存在」）；而 `*>` 出来的是 **UTF-16**，要按 `utf-16` 解码。
+另外 `*> $file` 挂在 `if/else` 整块后面会被解析成只作用于 `else` 分支，结果 exit 1 且**不产生文件**——
+要么给每个分支各自重定向，要么先算进一个变量再输出。
 
 ### 没有本地 pwsh，也要能验 pwsh 路径
 
@@ -185,7 +205,7 @@ repository = SqlAlchemyDocumentRepository(resources.session_factory)   # ✅ 工
 
 ## 已知环境误报（与 IMP 无关，别在 IMP commit 里修）
 
-**用 `envs/fin003` + 从仓库外跑 pytest，这些都不存在**（`276 passed` 的干净基线）。以下只在宿主
+**用 `envs/fin003` + 从仓库外跑 pytest，这些都不存在**（`302 passed` 的干净基线）。以下只在宿主
 `envs/default` 或仓库根目录下直接跑时出现，且都是宿主环境问题，不是代码问题：
 
 - `tests/unit/test_settings.py`：宿主 `.env` 的 `STORAGE_ROOT=/data/resumes` 在 Windows 上非绝对路径。
@@ -234,3 +254,33 @@ print({k: v for k, v in defs.items() if len(v) > 1})
 - Celery ack 策略：`task_acks_late=True` + `task_reject_on_worker_lost=True` + `task_acks_on_failure_or_timeout=False` + `worker_prefetch_multiplier=1`，让 at-least-once 可重放。
 - 临时错误（PARSER_TIMEOUT / STORAGE_UNAVAILABLE）→ Celery 指数退避 + jitter，封顶 `max_transient_retries`；终态错误（INVALID_PDF / ENCRYPTED_PDF / INVALID_DOCX / EMPTY_TEXT / EXTRACTED_TEXT_LIMIT_EXCEEDED / UNSUPPORTED_MEDIA）→ 标 FAILED/UNSUPPORTED，绝不重试。
 - Celery task 只做：参数解析 + 构建 RuntimeResources + 调应用服务；生命周期逻辑全在 `parse_service.py`（分层约束见详细设计 §14）。
+- **探针里验证「重跑不重复」，不要靠单测**：唯一能证明「SQL 层的替换语义 + 异步发布链路」都对的做法，是在真库探针里制造前置状态（psql 改状态）再走真接口，并**对比重跑前后的行数**。参考 `tests/validate_application_entry.ps1` 的 retry 段：置 `FAILED/retryable` → `POST /match-runs/{id}/retry` → 轮询到 `attempt=2 且 COMPLETED` → 断言候选人/报告/claim/evidence 四类计数与重跑前逐项相等。**轮询条件要写具体终态**：重试的起点 `FAILED` 本身就是终态，只等「terminal」会立刻返回旧状态，把失败伪装成通过。
+
+## Run 类任务：第一步是「认领」，不是「执行」（FIN-005 沉淀）
+
+`agent_runs` 是 MatchRun/ApplicationRun 共享的聚合根，`agent.execute_match_run` / `execute_application_run` 这类任务必须写成**认领（claim）**：
+
+1. `session.get(AgentRun, run_id, with_for_update=True)` —— 行锁。
+2. 调**纯函数** `decide_claim(status, cancel_requested, intent)` 得到「本次投递是否有权执行」，把它做成独立可单测的判定（本项目在 `backend/app/agent/tasks.py`），不要散在任务体里。
+3. 只有 `CLAIMED` 才继续；否则 `rollback` 并返回 `skipped + reason`（**要返回原因**，这是运维判断「卡住」的唯一线索）。
+4. 拿到 `CLAIMED` 后由服务把 run 置 `RUNNING` 并清掉上一轮失败标记；**整趟执行只 commit 一次**。
+
+本轮实现的策略表：
+
+| 意图 | 允许状态 | 其他状态 |
+|---|---|---|
+| `START` | `CREATED` | 终态→跳过；`RUNNING`→跳过；`WAITING_APPROVAL`→拒绝 |
+| `RETRY` | `FAILED` | 其余 `NOT_RETRYABLE` |
+
+三个容易写错的地方：
+
+- **取消标记优先于一切意图**：`cancel_requested_at is not None` 直接拒绝。取消的授权必须从库里读，**绝不能由任务参数决定**——谁能入队谁就能伪造参数。
+- **`RETRY` 分支必须放在「终态直接跳过」之前**：`FAILED` 本身就是终态，先判终态则重试永远进不去（`ALREADY_TERMINAL`）。本项目这次就是靠「变异验证」发现这个顺序风险的：把终态判断前移，`FAILED+retry` 立刻退化为 `ALREADY_TERMINAL`，测试马上抓到。
+- **`START` 绝不能接受 `WAITING_APPROVAL`**：那等于绕过人工闸门，直接违反「未审批副作用执行次数必须为 0」。这也决定了「`execute_application_run` 必须与 ApplicationRun 路由拆分**同批**落地」，不能先上一个只会 START 的版本。
+
+配套约定：
+
+- `operation_key = run_id:attempt`（MatchRun）/ `run_id:attempt:resume_version`（ApplicationRun，§14.1），用作 `send_task(task_id=...)`。**诚实认知**：Redis broker **不按 task_id 去重**，它只提供可观测/可审计标识；真正的守卫是上面那套 DB 认领。
+- HTTP 层：`commit` 业务事实**之后**再发布任务，发布失败**只记 warning、不让请求变 5xx**（§14.4）。`CREATED` 同时表示「已入队」和「未投递」，由维护任务扫描重投。
+- 重投是安全的：认领会拒绝正在执行中的 run，所以「多投一次」不会变成第二次执行。
+- 派生的行（候选人快照、证据报告及其子表）**整批替换**，不追加。报告子表 FK 没有 `ON DELETE CASCADE`，要按子→父顺序显式删。
