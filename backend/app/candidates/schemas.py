@@ -9,12 +9,19 @@ treat a successfully built ``CandidateProfileDraft`` as already normalized.
 from __future__ import annotations
 
 from datetime import date, datetime
-from enum import StrEnum
 from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# Re-exported, not redeclared: the ORM owns this enum. A second
+# ``class CandidateProfileStatus(StrEnum)`` with the same four members used to live
+# here, and two classes with equal values are never ``is``-identical — so identity
+# comparisons and ``dict[enum, ...]`` lookups across the ORM/API boundary failed
+# while printing identically. The ``as`` alias marks the deliberate re-export for
+# mypy strict; ``documents/schemas.py`` imports its status enum from the models
+# module for the same reason.
+from backend.app.candidates.models import CandidateProfileStatus as CandidateProfileStatus
 from backend.app.core.errors import AppError
 from backend.app.retrieval.models import HardRuleBundle
 from backend.app.retrieval.preview import CandidateRankingRow, CandidateRankingView
@@ -35,13 +42,6 @@ _MAX_SKILL = 80
 _MAX_ITEM_TEXT = 5_000
 _MAX_BLOCKS = 100
 _MAX_UNKNOWN_KEYS = 50
-
-
-class CandidateProfileStatus(StrEnum):
-    DRAFT = "DRAFT"
-    REVIEW_REQUIRED = "REVIEW_REQUIRED"
-    READY = "READY"
-    SUPERSEDED = "SUPERSEDED"
 
 
 class ContactInfo(BaseModel):

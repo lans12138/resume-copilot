@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import Enum as SaEnum
 
+from backend.app.candidates import schemas as candidate_schemas
 from backend.app.candidates.models import CandidateProfile, CandidateProfileStatus
 from backend.app.documents.models import DocumentStatus, ResumeDocument
 
@@ -53,3 +54,28 @@ def test_status_column_keeps_varchar_storage(
     assert column_type.native_enum is False
     assert column_type.create_constraint is False
     assert column_type.length == 32
+
+
+def test_profile_status_is_one_class_shared_by_orm_and_api() -> None:
+    """The ORM and the API schema must share one enum class, not two lookalikes.
+
+    ``candidates/schemas.py`` used to re-declare ``CandidateProfileStatus`` with the
+    same name and the same four members as ``candidates/models.py``. Two classes with
+    equal values are *equal* but never *identical*, so every identity comparison and
+    ``dict[enum, ...]`` lookup across the models/schemas boundary failed while looking
+    perfectly correct in a failure report — the pipeline integration test read:
+
+        AssertionError: assert <CandidateProfileStatus.READY: 'READY'> is
+                                <CandidateProfileStatus.READY: 'READY'>
+
+    The two definitions also drift silently: adding a member to only one of them
+    leaves the other rejecting a value the database accepts. ``documents/schemas.py``
+    already imports ``DocumentStatus`` from its models module, so this pins the same
+    single-source contract for candidates — on the response model itself, because
+    that is the boundary     the API actually exposes.
+    """
+    assert candidate_schemas.CandidateProfileStatus is CandidateProfileStatus
+    assert (
+        candidate_schemas.CandidateProfileResponse.model_fields["status"].annotation
+        is CandidateProfileStatus
+    )
