@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence, Set
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -98,7 +99,14 @@ class MatchRunService:
         prompt_version: str,
         rule_version: str,
     ) -> tuple[AgentRun, MatchRun]:
-        """Insert the CREATED run + MatchRun header and its first event."""
+        """Insert the CREATED run + MatchRun header and its first event.
+
+        The run is deliberately left ``CREATED``: that is the "persisted but not yet
+        executed" state a worker claims (FIN-005, §14.4), and the state
+        ``maintenance.republish_queued`` scans for when a publication is lost. Moving
+        it to ``RUNNING`` here — while the request still holds the run — would tell
+        every later claim that a worker already owns it.
+        """
         run = AgentRun(
             id=uuid4(),
             thread_id=uuid4().hex,
@@ -123,7 +131,6 @@ class MatchRunService:
             message_key="match_run.created",
             safe_payload={"job_id": str(job_id), "job_version_id": str(job_version_id)},
         )
-        await self._runs.set_status(run.id, RunStatus.RUNNING)
 
         match_run = MatchRun(
             run_id=run.id,
@@ -152,8 +159,13 @@ class MatchRunService:
         ``fail_profiles`` is a controlled fault-injection seam: any profile in it
         makes its ``score_with_evidence`` node raise, exercising single-candidate
         failure isolation. Production code never passes it.
+
+        The caller has already *claimed* the run (the row is locked and its status
+        permits execution); this method takes over from there and is responsible for
+        the ``CREATED``/``FAILED`` → ``RUNNING`` transition.
         """
         faults = fail_profiles or set()
+        await self._enter_running(run)
 
         await self._node(run, "parse_job", {"job_version_id": str(match_run.job_version_id)})
         snapshot = await self._retrieve_candidates(run, match_run)
@@ -371,6 +383,12 @@ class MatchRunService:
                 message_key="match_run.failed",
                 safe_payload={"reason": "all_candidates_failed"},
             )
+            # §5.6: a FAILED run carries its retry verdict. Every candidate failing
+            # points at the shared upstream (model gateway, retrieval), which is
+            # transient by nature, so the run is retryable; the retry then re-enters
+            # this same run row with attempt + 1.
+            run.retryable = True
+            run.error_code = "ALL_CANDIDATES_FAILED"
             await self._runs.set_status(run.id, RunStatus.FAILED, finished=True)
         else:
             await self._append(
@@ -383,6 +401,21 @@ class MatchRunService:
             )
             await self._runs.set_status(run.id, RunStatus.COMPLETED, finished=True)
         return status
+
+    async def _enter_running(self, run: AgentRun) -> None:
+        """Take ownership of the run for this pass.
+
+        Re-entering a ``FAILED`` run (a retry) clears the previous failure markers,
+        so a live run never reads as failed-with-an-error-code; the ``AgentEvent``
+        log keeps the history either way. ``started_at`` records the first pass only.
+        """
+        run.retryable = False
+        run.error_code = None
+        run.error_message_safe = None
+        run.failed_node = None
+        if run.started_at is None:
+            run.started_at = datetime.now(tz=datetime.now().astimezone().tzinfo)
+        await self._runs.set_status(run.id, RunStatus.RUNNING)
 
     async def _node(
         self, run: AgentRun, name: str, payload: dict[str, object]

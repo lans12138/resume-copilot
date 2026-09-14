@@ -96,6 +96,90 @@ function Invoke-Login {
         -ContentType 'application/x-www-form-urlencoded'
 }
 
+function Wait-WorkerReady {
+    # Runs execute off the request path (FIN-005), so the probe must not create a
+    # run before the worker is consuming the agent queue. The worker deliberately
+    # has no Docker healthcheck (see compose.yaml), so readiness is asserted from
+    # its log — the same instrument tests/validate_worker.ps1 uses.
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        $log = (Invoke-Compose -Arguments @('logs', 'worker') | Out-String)
+        if ($log -match 'celery@.*ready' -or $log -match 'Connected to redis') {
+            return
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw 'Worker did not become ready within the timeout.'
+}
+
+function Wait-MatchRunTerminal {
+    param(
+        [Parameter(Mandatory)][string] $RunId,
+        [Parameter(Mandatory)][string] $Token
+    )
+    # CREATED is not terminal, so polling for a terminal status cannot return the
+    # pre-execution state; a bounded wait is the only way to observe a run whose
+    # execution belongs to another process.
+    $deadline = (Get-Date).AddSeconds(180)
+    while ((Get-Date) -lt $deadline) {
+        $run = Invoke-Api -Method 'GET' -Path "/api/v1/match-runs/$RunId" -Token $Token
+        if (
+            $run.Status -eq 200 -and
+            @('COMPLETED', 'FAILED', 'CANCELLED') -contains $run.Body.status
+        ) {
+            return $run
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "MatchRun $RunId did not reach a terminal status within the timeout."
+}
+
+function Wait-MatchRunRetried {
+    param(
+        [Parameter(Mandatory)][string] $RunId,
+        [Parameter(Mandatory)][string] $Token
+    )
+    # A retry *starts* from FAILED, which is itself terminal, so waiting for
+    # "terminal" would return immediately with the pre-retry status and hide any
+    # failure. Wait for the second attempt to finish instead.
+    $deadline = (Get-Date).AddSeconds(180)
+    while ((Get-Date) -lt $deadline) {
+        $run = Invoke-Api -Method 'GET' -Path "/api/v1/match-runs/$RunId" -Token $Token
+        if (
+            $run.Status -eq 200 -and
+            $run.Body.status -eq 'COMPLETED' -and
+            $run.Body.attempt -eq 2
+        ) {
+            return $run
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "MatchRun $RunId did not complete its retry within the timeout."
+}
+
+function Get-MatchRunDerivedRowCounts {
+    param([Parameter(Mandatory)][string] $RunId)
+    # Everything a pass produces is derived data, so a retry must not change these
+    # counts: a duplicated candidate would break uq_match_run_candidates_profile,
+    # and a duplicated report would break uq_match_reports_run_application.
+    $sql = (
+        "SELECT (SELECT count(*) FROM match_run_candidates WHERE run_id = '$RunId')" +
+        " || '|' || (SELECT count(*) FROM match_reports WHERE run_id = '$RunId')" +
+        " || '|' || (SELECT count(*) FROM report_claims WHERE report_id IN" +
+        " (SELECT id FROM match_reports WHERE run_id = '$RunId'))" +
+        " || '|' || (SELECT count(*) FROM claim_evidences WHERE claim_id IN" +
+        " (SELECT id FROM report_claims WHERE report_id IN" +
+        " (SELECT id FROM match_reports WHERE run_id = '$RunId')));"
+    )
+    return (
+        Invoke-Compose -Arguments @(
+            'exec', '--no-TTY', 'postgres',
+            'psql', '-U', 'resume_app', '-d', 'resume_copilot',
+            '-v', 'ON_ERROR_STOP=1', '-tAc', $sql
+        ) | Select-Object -Last 1
+    ).Trim()
+}
+
 if (@(Get-ProjectResources).Count -gt 0) {
     throw "Refusing to reuse existing Docker resources for project: $projectName"
 }
@@ -110,8 +194,11 @@ try {
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'seed'))
     [void] (Invoke-Compose -Arguments @('--profile', 'tools', 'run', '--rm', 'seed'))
     [void] (Invoke-Compose -Arguments @(
-        'up', '--detach', '--wait', '--wait-timeout', '120', 'api'
+        'up', '--detach', '--wait', '--wait-timeout', '120', 'api', 'worker'
     ))
+    # FIN-005: the API no longer executes runs itself, so the worker must be
+    # consuming the agent queue before the first MatchRun is created.
+    Wait-WorkerReady
 
     $login = Invoke-Login
     if ($login.Status -ne 200 -or -not $login.Body.access_token) {
@@ -152,14 +239,14 @@ try {
         -Body '{}' `
         -ContentType 'application/json' `
         -Token $token
-    if ($createdMatchRun.Status -ne 202 -or $createdMatchRun.Body.status -ne 'COMPLETED') {
+    # FIN-005 §14.4: the request commits the run and returns CREATED; a worker
+    # executes it. COMPLETED here would mean the request path still did the work.
+    if ($createdMatchRun.Status -ne 202 -or $createdMatchRun.Body.status -ne 'CREATED') {
         throw "MatchRun creation failed: $($createdMatchRun.RawBody)"
     }
+    $matchRunId = $createdMatchRun.Body.run_id
 
-    $matchRun = Invoke-Api `
-        -Method 'GET' `
-        -Path "/api/v1/match-runs/$($createdMatchRun.Body.run_id)" `
-        -Token $token
+    $matchRun = Wait-MatchRunTerminal -RunId $matchRunId -Token $token
     $applicationIds = @($matchRun.Body.candidates | ForEach-Object { $_.application_id })
     if (
         $matchRun.Status -ne 200 -or
@@ -175,11 +262,51 @@ try {
             'exec', '--no-TTY', 'postgres',
             'psql', '-U', 'resume_app', '-d', 'resume_copilot',
             '-v', 'ON_ERROR_STOP=1', '-tAc',
-            "SELECT count(*) || '|' || count(*) FILTER (WHERE ja.status = 'ON_HOLD') FROM match_run_candidates AS mrc JOIN job_applications AS ja ON ja.id = mrc.application_id WHERE mrc.run_id = '$($createdMatchRun.Body.run_id)' AND ja.job_id = '$($job.id)';"
+            "SELECT count(*) || '|' || count(*) FILTER (WHERE ja.status = 'ON_HOLD') FROM match_run_candidates AS mrc JOIN job_applications AS ja ON ja.id = mrc.application_id WHERE mrc.run_id = '$matchRunId' AND ja.job_id = '$($job.id)';"
         ) | Select-Object -Last 1
     ).Trim()
     if ($linkProbe -ne '5|1') {
         throw "MatchRun candidates are not linked to JobApplications: $linkProbe"
+    }
+
+    # §5.6 retry. Put the run into the only state that admits a retry and let the
+    # worker re-drive it as attempt 2. A retry re-enters the *same* run, so every
+    # row the pass derives has to be replaced: appending would collide with
+    # uq_match_run_candidates_profile / uq_match_reports_run_application, the
+    # worker's transaction would roll back, and the run would stay FAILED — which
+    # is what the bounded wait below turns into a failure instead of a hang.
+    $rowsBeforeRetry = Get-MatchRunDerivedRowCounts -RunId $matchRunId
+    [void] (Invoke-Compose -Arguments @(
+        'exec', '--no-TTY', 'postgres',
+        'psql', '-U', 'resume_app', '-d', 'resume_copilot',
+        '-v', 'ON_ERROR_STOP=1', '-c',
+        "UPDATE agent_runs SET status = 'FAILED', retryable = true, error_code = 'ALL_CANDIDATES_FAILED', finished_at = now() WHERE id = '$matchRunId';"
+    ))
+
+    $retriedMatchRun = Invoke-Api `
+        -Method 'POST' `
+        -Path "/api/v1/match-runs/$matchRunId/retry" `
+        -Body '{}' `
+        -ContentType 'application/json' `
+        -Token $token `
+        -IdempotencyKey 'application-entry-match-run-retry'
+    # The retry is only *enqueued*: nothing about the stored state changes until a
+    # worker claims it with the retry intent, so the run still reads FAILED here.
+    if ($retriedMatchRun.Status -ne 202 -or $retriedMatchRun.Body.status -ne 'FAILED') {
+        throw "MatchRun retry was not accepted: $($retriedMatchRun.RawBody)"
+    }
+
+    $reRun = Wait-MatchRunRetried -RunId $matchRunId -Token $token
+    $retriedApplicationIds = @($reRun.Body.candidates | ForEach-Object { $_.application_id })
+    if (
+        @($retriedApplicationIds | Sort-Object -Unique).Count -ne 5 -or
+        (Compare-Object $applicationIds $retriedApplicationIds)
+    ) {
+        throw "MatchRun retry did not re-snapshot the same candidates: $($reRun.RawBody)"
+    }
+    $rowsAfterRetry = Get-MatchRunDerivedRowCounts -RunId $matchRunId
+    if ($rowsAfterRetry -ne $rowsBeforeRetry) {
+        throw "MatchRun retry duplicated derived rows: before=$rowsBeforeRetry after=$rowsAfterRetry"
     }
 
     $applicationId = $applicationIds[0]
@@ -370,14 +497,16 @@ try {
         throw "Workflow-tail database invariants failed: $tailProbe"
     }
 
-    Write-Output 'APPLICATION_ENTRY_VALIDATION_OK ranking=linked restarts=2 checkpoints=persisted approvals=2 history=2 interview=1 duplicate=guarded'
+    Write-Output 'APPLICATION_ENTRY_VALIDATION_OK ranking=linked async=worker retry=attempt2 replaced=derived-rows restarts=2 checkpoints=persisted approvals=2 history=2 interview=1 duplicate=guarded'
 }
 catch {
+    # Runs now execute in the worker (FIN-005), so its log is the only place a
+    # failed claim or a rolled-back pass is visible.
     & docker compose `
         --project-name $projectName `
         --env-file $envFile `
         --file $composeFile `
-        logs --no-color --tail 120 api | Out-Host
+        logs --no-color --tail 120 api worker | Out-Host
     throw
 }
 finally {

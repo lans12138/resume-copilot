@@ -227,7 +227,14 @@ class ReportService:
         candidates: list[MatchRunCandidate],
         evidence: EvidenceProvider,
     ) -> ReportBuildResult:
-        """Build, verify, and persist one report per ``COMPLETED`` candidate."""
+        """Build, verify, and persist one report per ``COMPLETED`` candidate.
+
+        The run's reports are *replaced*, not appended to: they are derived from this
+        scoring pass, so re-running the pass (a §5.6 retry, or an at-least-once
+        redelivery that got this far) must leave one attempt's conclusions rather
+        than two sets colliding on ``uq_match_reports_run_application``.
+        """
+        await self._reports.delete_by_run(run.id)
         total = 0
         written = 0
         illegal = 0

@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from backend.app.agent.models import AgentEvent, AgentEventType, AgentRun, RunStatus
 from backend.app.agent.repository import InMemoryAgentRunRepository
-from backend.app.match_run.models import MatchRunCandidate, ProcessingStatus
+from backend.app.match_run.models import MatchRun, MatchRunCandidate, ProcessingStatus
 from backend.app.match_run.repository import (
     InMemoryMatchRunCandidateRepository,
     InMemoryMatchRunRepository,
@@ -267,3 +267,113 @@ def test_concurrent_fan_out_processes_every_candidate() -> None:
     assert {c.candidate_profile_id for c in candidates} == set(ids)
     assert all(c.processing_status == ProcessingStatus.COMPLETED for c in candidates)
     assert run.status == RunStatus.COMPLETED
+
+
+def _create(
+    service: MatchRunService,
+) -> tuple[AgentRun, MatchRun]:
+    return asyncio.run(
+        service.create_match_run(
+            job_id=uuid4(),
+            job_version_id=JOB_VERSION_ID,
+            actor_id=uuid4(),
+            retrieval_config={"top_k": 10},
+            model_config={"model": "fake"},
+            prompt_version="v1",
+            rule_version="v1",
+        )
+    )
+
+
+def test_create_match_run_leaves_the_run_for_a_worker_to_claim() -> None:
+    """FIN-005 §14.4: creation records the fact, execution is not the request's job.
+
+    The run has to stay ``CREATED`` until a worker claims it: that is the status the
+    claim accepts, and the one ``maintenance.republish_queued`` scans for when a
+    publication is lost. Flipping it to ``RUNNING`` at creation time would tell every
+    later delivery that a worker already owns it.
+    """
+    service = _service(_snapshot([_candidate(uuid4(), 1, HardRuleOutcome.PASS)]))
+    run, _match_run = _create(service)
+
+    assert run.status is RunStatus.CREATED
+    events = asyncio.run(service._runs.list_events(run.id))  # noqa: SLF001
+    assert [event.event_type for event in events] == [AgentEventType.RUN_CREATED]
+    assert [event.status for event in events] == [RunStatus.CREATED.value]
+
+
+def test_executing_a_run_claims_it_as_running_before_the_graph_starts() -> None:
+    """The claimed run reads ``RUNNING`` for every other reader from the first node."""
+    fused = [_candidate(uuid4(), 1, HardRuleOutcome.PASS)]
+    snapshot = _snapshot(fused)
+    observed: list[RunStatus] = []
+    holder: dict[str, AgentRun] = {}
+
+    class _ObservingRankings:
+        async def get_snapshot(self, *, job_version_id: UUID) -> RankingSnapshot:
+            observed.append(holder["run"].status)
+            return snapshot
+
+    service = MatchRunService(
+        run_repository=InMemoryAgentRunRepository(),
+        match_run_repository=InMemoryMatchRunRepository(),
+        candidate_repository=InMemoryMatchRunCandidateRepository(),
+        rankings=_ObservingRankings(),
+        concurrency=1,
+    )
+    run, match_run = _create(service)
+    holder["run"] = run
+
+    asyncio.run(
+        service.execute_match_run(
+            run=run, match_run=match_run, application_ids=_application_ids(fused)
+        )
+    )
+
+    assert observed == [RunStatus.RUNNING]
+    assert run.status is RunStatus.COMPLETED
+
+
+def test_failed_run_is_retryable_and_a_retry_replaces_the_passed_snapshot() -> None:
+    """§5.6: a retry re-enters the same run/thread with attempt + 1.
+
+    Everything the pass produces — candidate rows, failure markers — is derived
+    state, so re-entering the graph must leave one pass's worth of it. A retry that
+    appended would hit ``uq_match_run_candidates_profile``/``..._order``; one that
+    kept the failure markers would report a live run as failed-with-an-error.
+    """
+    ids = [uuid4(), uuid4()]
+    fused = [_candidate(pid, i + 1, HardRuleOutcome.PASS) for i, pid in enumerate(ids)]
+    service = _service(_snapshot(fused))
+    run, match_run = _create(service)
+
+    asyncio.run(
+        service.execute_match_run(
+            run=run,
+            match_run=match_run,
+            application_ids=_application_ids(fused),
+            fail_profiles=set(ids),
+        )
+    )
+    first_pass = run.status
+    assert first_pass == RunStatus.FAILED
+    assert run.retryable is True
+    assert run.error_code == "ALL_CANDIDATES_FAILED"
+
+    run.attempt += 1
+    asyncio.run(
+        service.execute_match_run(
+            run=run,
+            match_run=match_run,
+            application_ids=_application_ids(fused),
+        )
+    )
+
+    retry_pass = run.status
+    assert retry_pass == RunStatus.COMPLETED
+    assert run.attempt == 2
+    assert run.retryable is False
+    assert run.error_code is None
+    candidates = asyncio.run(service._candidates.get_candidates(run.id))  # noqa: SLF001
+    assert len(candidates) == len(ids)
+    assert all(c.processing_status == ProcessingStatus.COMPLETED for c in candidates)

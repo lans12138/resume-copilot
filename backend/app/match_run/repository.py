@@ -6,10 +6,11 @@ Two small repositories back the MatchRun aggregate:
   configs). It is write-once in MVP; ``update_match_run`` exists for the retry
   bookkeeping added later (IMP-025).
 * ``MatchRunCandidateRepository`` owns the per-candidate snapshot rows. The
-  fan-out writes them in two phases: ``save_candidates`` inserts all rows as
-  ``PENDING`` during ``snapshot_candidates``; each candidate's fixed node group
-  then flips its row to ``COMPLETED`` or ``FAILED``. Both phases go through the
-  same in-memory lock so concurrent candidate updates never corrupt the row set.
+  fan-out writes them in two phases: ``save_candidates`` *replaces* the run's rows
+  as ``PENDING`` during ``snapshot_candidates`` (replacing, not appending, so a
+  retry can re-enter the node); each candidate's fixed node group then flips its
+  row to ``COMPLETED`` or ``FAILED``. Both phases go through the same in-memory
+  lock so concurrent candidate updates never corrupt the row set.
 
 Two adapters ship: ``InMemoryMatchRunRepository`` / ``InMemoryMatchRunCandidate-
 Repository`` for hermetic unit tests and local runs, and the ``Sql*`` variants
@@ -22,7 +23,7 @@ import asyncio
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.match_run.models import MatchRun, MatchRunCandidate, ProcessingStatus
@@ -39,7 +40,11 @@ class MatchRunRepository(Protocol):
 
 
 class MatchRunCandidateRepository(Protocol):
-    """Persistence contract for per-candidate ranking snapshots."""
+    """Persistence contract for per-candidate ranking snapshots.
+
+    ``save_candidates`` takes the rows of exactly one run and makes them that
+    run's whole snapshot.
+    """
 
     async def save_candidates(self, candidates: list[MatchRunCandidate]) -> None: ...
 
@@ -146,6 +151,17 @@ class SqlMatchRunCandidateRepository:
         self._session = session
 
     async def save_candidates(self, candidates: list[MatchRunCandidate]) -> None:
+        # The snapshot is *derived* data: `snapshot_candidates` recomputes it in full
+        # from the frozen ranking on every pass, and a retry of a FAILED run re-enters
+        # that node on the same run_id. Inserting on top of the previous pass would
+        # hit uq_match_run_candidates_profile/order, so replace the run's rows — which
+        # is also what the in-memory adapter already does.
+        if candidates:
+            await self._session.execute(
+                delete(MatchRunCandidate).where(
+                    MatchRunCandidate.run_id == candidates[0].run_id
+                )
+            )
         self._session.add_all(candidates)
         await self._session.flush()
 

@@ -13,7 +13,7 @@ import asyncio
 from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.reports.models import (
@@ -33,6 +33,8 @@ class ReportRepository(Protocol):
     async def save_claim(self, claim: ReportClaim) -> None: ...
 
     async def save_evidence(self, evidence: ClaimEvidence) -> None: ...
+
+    async def delete_by_run(self, run_id: UUID) -> None: ...
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]: ...
 
@@ -57,6 +59,19 @@ class InMemoryReportRepository:
     async def save_evidence(self, evidence: ClaimEvidence) -> None:
         async with self._lock:
             self._evidences.append(evidence)
+
+    async def delete_by_run(self, run_id: UUID) -> None:
+        async with self._lock:
+            doomed = {r.id for r in self._reports.values() if r.run_id == run_id}
+            self._reports = {
+                rid: report for rid, report in self._reports.items() if rid not in doomed
+            }
+            self._claims = {
+                cid: claim for cid, claim in self._claims.items() if claim.report_id not in doomed
+            }
+            self._evidences = [
+                e for e in self._evidences if e.claim_id in self._claims
+            ]
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]:
         async with self._lock:
@@ -100,6 +115,25 @@ class SqlReportRepository:
 
     async def save_evidence(self, evidence: ClaimEvidence) -> None:
         self._session.add(evidence)
+        await self._session.flush()
+
+    async def delete_by_run(self, run_id: UUID) -> None:
+        """Drop a run's reports together with their claims and evidence (§5.6).
+
+        Reports are *derived* data — a retry re-scores the run and must not leave
+        two attempts' conclusions side by side under one run. Children go first:
+        the foreign keys declare no ON DELETE CASCADE, and relying on one would
+        hide the ordering requirement from the reader.
+        """
+        report_ids = select(MatchReport.id).where(MatchReport.run_id == run_id)
+        claim_ids = select(ReportClaim.id).where(ReportClaim.report_id.in_(report_ids))
+        await self._session.execute(
+            delete(ClaimEvidence).where(ClaimEvidence.claim_id.in_(claim_ids))
+        )
+        await self._session.execute(
+            delete(ReportClaim).where(ReportClaim.report_id.in_(report_ids))
+        )
+        await self._session.execute(delete(MatchReport).where(MatchReport.run_id == run_id))
         await self._session.flush()
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]:

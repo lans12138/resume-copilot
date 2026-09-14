@@ -1,31 +1,36 @@
-"""MatchRun API endpoints (IMP-026, detailed design §12.4).
+"""MatchRun API endpoints (IMP-026 / FIN-005, detailed design §12.4).
 
-``POST /jobs/{id}/match-runs`` creates the run header, authorizes on the job, and
-executes the batch-analysis graph to a terminal state (no side effects, no
-approval). Progress is followed live via ``GET /match-runs/{id}/events`` (IMP-025).
-The route builds all adapters from one session; authorization reuses the same
-job-level check used everywhere else.
+``POST /jobs/{id}/match-runs`` records the run header, authorizes on the job, and
+hands execution to a worker: the request answers 202 while the batch analysis
+(§10.2, no side effects, no approval) runs off the request path. Progress is
+followed live via ``GET /match-runs/{id}/events`` (IMP-025) and polled through
+``GET /match-runs/{id}`` until the run reaches a terminal status.
+
+The route builds all adapters from one session and reuses the same job-level
+authorization check as everywhere else. Publication happens *after* the business
+facts are committed, and its failure never fails the request (§14.4).
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 
-from backend.app.agent.models import RunStatus, RunType
+from backend.app.agent.checkpoint import SqlCheckpointer
+from backend.app.agent.enqueuer import CeleryRunEnqueuer
+from backend.app.agent.models import AgentRun, RunStatus, RunType
 from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
-from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.errors import app_error
 from backend.app.idempotency.dependency import IdempotencyGuardDep
+from backend.app.infrastructure.celery import app as celery_app
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
-from backend.app.match_run.applications import SqlApplicationsProvider
-from backend.app.match_run.rankings import SqlRankingsProvider
 from backend.app.match_run.repository import (
     SqlMatchRunCandidateRepository,
     SqlMatchRunRepository,
@@ -38,31 +43,31 @@ from backend.app.match_run.schemas import (
     MatchRunList,
     MatchRunSummary,
 )
-from backend.app.match_run.service import MatchRunService
-from backend.app.reports.repository import SqlReportRepository
-from backend.app.reports.service import ReportService
+from backend.app.match_run.wiring import build_match_run_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["match-runs"])
 
-
-def _build(session: Any, resources: RuntimeResources, settings: Any) -> MatchRunService:
-    """Assemble the MatchRun service + repositories from one session."""
-    agent_repo = SqlAgentRunRepository(session)
-    rankings = SqlRankingsProvider(session, settings)
-    return MatchRunService(
-        run_repository=agent_repo,
-        match_run_repository=SqlMatchRunRepository(session),
-        candidate_repository=SqlMatchRunCandidateRepository(session),
-        rankings=rankings,
-        applications=SqlApplicationsProvider(session),
-        # AsyncSession cannot be flushed concurrently. The service keeps its
-        # bounded fan-out seam for worker-scoped repositories, while this
-        # request-scoped transaction processes candidates one at a time.
-        concurrency=1,
-    )
-
-
 ActorDep = Annotated[Actor, Depends(get_current_actor)]
+
+
+def _publish_match_run(run: AgentRun) -> None:
+    """Deliver the execution task after the run is committed (§14.4).
+
+    A broker failure must not fail the request: the run is already durable, and
+    ``CREATED`` means both "enqueued" and "not yet delivered", so the republish
+    scan (FIN-006) recovers it without any extra flag. Raising here would turn a
+    recoverable Redis outage into a 5xx for a run that unambiguously exists.
+
+    ``FAILED`` + ``retryable`` is equally safe to republish: the worker's claim
+    refuses a run that is mid-pass, so a speculative re-delivery can only be
+    accepted when the run really is waiting for one.
+    """
+    try:
+        CeleryRunEnqueuer(celery_app).enqueue_match_run(run.id, attempt=run.attempt)
+    except Exception:  # noqa: BLE001 - a Redis outage must not fail a committed run
+        logger.warning("match_run.publish_failed run_id=%s", run.id, exc_info=True)
 
 
 @router.post("/jobs/{job_id}/match-runs", status_code=202, response_model=MatchRunAccepted)
@@ -72,16 +77,15 @@ async def create_match_run(
     actor: ActorDep,
     request: Request,
 ) -> MatchRunAccepted:
-    """Create and execute a job-level MatchRun (batch analysis, no approval)."""
+    """Create a job-level MatchRun and enqueue its execution (no approval)."""
     resources: RuntimeResources = request.app.state.resources
     settings = request.app.state.settings
     async with resources.session_factory() as session:
-        job_service = JobService(session)
-        job = await job_service.get_authorized(actor, job_id)
+        job = await JobService(session).get_authorized(actor, job_id)
         if job.current_version_id is None:
             raise app_error("JOB_NO_VERSION", http_status=409, safe_message="岗位尚无可用版本")
-        service = _build(session, resources, settings)
-        run, match_run = await service.create_match_run(
+        service = build_match_run_service(session, settings)
+        run, _match_run = await service.create_match_run(
             job_id=job.id,
             job_version_id=job.current_version_id,
             actor_id=actor.user_id,
@@ -90,13 +94,10 @@ async def create_match_run(
             prompt_version=payload.prompt_version,
             rule_version=payload.rule_version,
         )
-        await service.execute_match_run(
-            run=run,
-            match_run=match_run,
-            report_service=ReportService(SqlReportRepository(session)),
-            evidence_provider=SqlEvidenceChunkRepository(session),
-        )
+        # Commit the business fact first: a run that exists and was never published
+        # is recoverable, a publication for a run that was rolled back is not.
         await session.commit()
+        _publish_match_run(run)
         return MatchRunAccepted(run_id=run.id, job_id=job.id, status=run.status.value)
 
 
@@ -172,6 +173,14 @@ async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Matc
 async def retry_match_run(
     run_id: UUID, actor: ActorDep, request: Request, guard: IdempotencyGuardDep
 ) -> MatchRunAccepted:
+    """Re-drive a FAILED, retryable MatchRun as a new attempt (§5.6).
+
+    The run keeps its row (and its ``thread_id``); ``attempt`` advances so the new
+    execution slice is distinguishable, and the status stays ``FAILED`` until a
+    worker claims it with the *retry* intent. Leaving it ``FAILED`` is what makes
+    the retry explicit: nothing about the stored state invites execution, only the
+    published intent does.
+    """
     resources: RuntimeResources = request.app.state.resources
     async with resources.session_factory() as session:
         agent_repo = SqlAgentRunRepository(session)
@@ -179,24 +188,19 @@ async def retry_match_run(
         if agent_run is None or agent_run.run_type is not RunType.MATCH:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         await _authorize_from_run(actor, agent_run, session)
-        if agent_run.status != RunStatus.FAILED:
+        if agent_run.status is not RunStatus.FAILED or not agent_run.retryable:
             raise app_error(
                 "RUN_NOT_RETRYABLE",
                 http_status=409,
                 safe_message="该分析流程不可重试",
-                details={"status": agent_run.status.value},
+                details={"status": agent_run.status.value, "retryable": agent_run.retryable},
             )
         match_run = await SqlMatchRunRepository(session).get_match_run(run_id)
         if match_run is None:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
-        service = _build(session, resources, request.app.state.settings)
-        await service.execute_match_run(
-            run=agent_run,
-            match_run=match_run,
-            report_service=ReportService(SqlReportRepository(session)),
-            evidence_provider=SqlEvidenceChunkRepository(session),
-        )
+        agent_run.attempt += 1
         await session.commit()
+        _publish_match_run(agent_run)
         result = MatchRunAccepted(
             run_id=agent_run.id, job_id=match_run.job_id, status=agent_run.status.value
         )
@@ -215,8 +219,12 @@ async def cancel_match_run(
         if agent_run is None or agent_run.run_type is not RunType.MATCH:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         await _authorize_from_run(actor, agent_run, session)
+        # Session-scoped checkpointer: the same store the run was written with. A
+        # worker delivery that arrives after this sees a cancellation marker and
+        # refuses to start (agent.tasks.decide_claim), so the flag — not the
+        # in-process adapter — is what actually stops the run.
         run_service = RunService(
-            agent_repo, resources.checkpointer, notifier=resources.event_notifier
+            agent_repo, SqlCheckpointer(session), notifier=resources.event_notifier
         )
         await run_service.cancel_run(agent_run, reason="user_cancel")
         match_run = await SqlMatchRunRepository(session).get_match_run(run_id)

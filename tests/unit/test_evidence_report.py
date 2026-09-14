@@ -364,6 +364,43 @@ def test_generate_counts_and_drops_illegal_reference() -> None:
     assert all(len(claim.evidences) == 0 for claim in views[0].claims)
 
 
+def test_generate_replaces_a_runs_previous_reports() -> None:
+    """A re-run of the pass replaces its reports instead of accumulating them (§5.6).
+
+    Reports are derived from one scoring pass. Keeping the previous pass's rows
+    would leave two verdicts per candidate under a single run — and on PostgreSQL
+    the second pass would collide with ``uq_match_reports_run_application``, so a
+    MatchRun retry could not complete at all. The children must go with the parent;
+    a claim or an evidence row left behind is an orphan no read path would ever
+    surface again.
+    """
+    profile = uuid4()
+    chunks = {profile: [_chunk(profile)]}
+    candidates = [_candidate(profile, 1, HardRuleOutcome.PASS)]
+    repo = InMemoryReportRepository()
+    service = ReportService(repo)
+    run = _agent_run(uuid4())
+    match_run = _match_run(run.id)
+
+    for _ in range(2):
+        result = asyncio.run(
+            service.generate_for_run(
+                run=run,
+                match_run=match_run,
+                candidates=candidates,
+                evidence=_ChunkProvider(chunks),
+            )
+        )
+        assert result.reports_written == 1
+
+    views = asyncio.run(repo.list_by_run(run.id))
+    assert len(views) == 1
+    assert len(repo._claims) == len(views[0].claims)  # noqa: SLF001
+    assert len(repo._evidences) == sum(  # noqa: SLF001
+        len(claim.evidences) for claim in views[0].claims
+    )
+
+
 def _run_id_of(repo: InMemoryReportRepository) -> UUID:
     # The repository stores reports keyed by id; read back the single run id.
     return next(iter(repo._reports.values())).run_id  # noqa: SLF001

@@ -66,6 +66,22 @@ class RunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+# A terminal run never moves again: FIN-005's "no terminal-state regression" and
+# FIN-006's republish scan both key off this, and a re-delivered worker task must
+# recognise it before touching the aggregate. Declared once, next to the enum, so a
+# new status cannot be added without a reader noticing it here; it used to be
+# spelled out as an inline tuple in job_applications/service.py (twice) and as a set
+# of strings in sse/schemas.py.
+TERMINAL_RUN_STATUSES: frozenset[RunStatus] = frozenset(
+    {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+)
+
+
+def is_terminal(status: RunStatus) -> bool:
+    """True when the run has reached a state it can never leave."""
+    return status in TERMINAL_RUN_STATUSES
+
+
 class AgentEventType(StrEnum):
     """Structured event kinds written by nodes and the run engine."""
 
