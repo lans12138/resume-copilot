@@ -178,16 +178,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import subprocess,sys; r=subprocess.run(["celery","-A","backend.app.infrastructure.celery:app","inspect","ping","--timeout","10"],timeout=15); sys.exit(r.returncode)
-      interval: 15s
-      timeout: 20s
-      retries: 20
-      start_period: 20s
+    # No Docker healthcheck: celery inspect ping is unreliable as a container
+    # health gate. Readiness is asserted functionally by tests/validate_worker.ps1,
+    # which polls the worker log for "ready"/"Connected to redis" before enqueuing.
     stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
