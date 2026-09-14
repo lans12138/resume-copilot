@@ -73,6 +73,28 @@ try {
     # the worker that consumes documents.parse has to be part of this stack.
     [void] (Invoke-Compose -Arguments @('up', '--detach', '--wait', '--wait-timeout', '120', 'worker'))
 
+    # The worker has no Docker healthcheck, so `up --wait` only confirms the
+    # container started, not that it has imported the app and connected to the
+    # Redis broker. Without this gate the browser can enqueue a match run while
+    # the worker is still booting, the task sits unacked, the run never leaves
+    # CREATED within the e2e poll budget, and recruitment-flow.spec.ts reports 0
+    # candidates. Mirror validate_worker.ps1: poll the worker log for readiness.
+    $workerReady = $false
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        $log = (Invoke-Compose -Arguments @('logs', 'worker') | Out-String)
+        if ($log -match 'celery@.*ready' -or $log -match 'Connected to redis') {
+            $workerReady = $true
+            break
+        }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $workerReady) {
+        & docker compose --project-name $projectName --env-file $envFile `
+            --file $composeFile --file $composeOverride logs --no-color --tail 120 api worker 2>&1 | Out-Host
+        throw "Web probe worker did not become ready within the timeout."
+    }
+
     Push-Location $webDirectory
     try {
         # Playwright clears its own output directory on start, but that clear can be

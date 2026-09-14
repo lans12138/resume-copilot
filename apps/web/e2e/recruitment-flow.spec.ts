@@ -21,8 +21,13 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   // document-review.spec.ts sorts first and confirms a resume of its own, so the
   // demo job's ranking legitimately grows past the five seeded candidates. What
   // this test means is "the seeded pool is in the ranking", which is what it asserts.
+  // The match run executes in a Celery worker (FIN-005), so candidates only
+  // appear after the worker commits and the SSE terminal frame triggers a refetch.
+  // That pipeline routinely takes several seconds in CI (worker boot + per-task
+  // resource build + retrieval), so give the poll a realistic budget instead of
+  // the 5s expect.poll default.
   await expect
-    .poll(() => ranking.getByRole("button", { name: "启动单人流程" }).count())
+    .poll(() => ranking.getByRole("button", { name: "启动单人流程" }).count(), { timeout: 30000 })
     .toBeGreaterThanOrEqual(5)
   const reports = page.getByRole("region", { name: "证据化报告" })
   await expect(reports.getByText("Candidate report").first()).toBeVisible()
