@@ -31,7 +31,7 @@ from backend.app.agent.service import RunService
 from backend.app.auth.models import UserRole
 from backend.app.auth.tokens import Actor
 from backend.app.core.errors import AppError
-from backend.app.sse.notifier import InMemoryEventNotifier
+from backend.app.sse.notifier import InMemoryEventNotifier, _RedisSubscription
 from backend.app.sse.service import SseService
 
 HEARTBEAT = 0.05  # seconds — small so heartbeat-driven behaviours are prompt in tests
@@ -303,3 +303,32 @@ async def _match_run_sse() -> None:
     text = await _drain(svc.stream(_actor(), run.id, last), timeout=1.0)
     assert _sequences(text) == [0, 1, 2]
     assert "SSE_AUTH_REVOKED" not in text
+
+
+def test_redis_subscription_wait_returns_within_timeout_when_pubsub_silent() -> None:
+    """Regression for the e2e SSE hang (FIN-005).
+
+    In the shared-Redis stack ``get_message(timeout=...)`` ignored its own timeout
+    and blocked until a real cross-process message arrived; the worker's publish
+    never reached the API SSE connection, so ``wait`` hung and the §13.2 PostgreSQL
+    re-read never fired — the ranking stayed empty and recruitment-flow.spec.ts
+    timed out with zero candidates. ``_RedisSubscription.wait`` now bounds the read
+    with asyncio.wait_for, so it must return inside ``timeout`` even when the
+    Pub/Sub wake is silent forever.
+    """
+
+    class _BlockingPubSub:
+        async def subscribe(self, channel: str) -> None:  # pragma: no cover - exercised
+            return None
+
+        async def get_message(self, *, ignore_subscribe_messages: bool = False):
+            # A notify that never arrives: block indefinitely to mimic the e2e hang.
+            await asyncio.sleep(3600)
+
+    class _FakeRedis:
+        def pubsub(self) -> _BlockingPubSub:
+            return _BlockingPubSub()
+
+    sub = _RedisSubscription(_FakeRedis(), "run:abc")
+    # wait must return inside the bound; the outer wait_for fails the test if it does not.
+    asyncio.run(asyncio.wait_for(sub.wait(0.2), timeout=1.0))

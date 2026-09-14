@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     node_timeout_seconds: int = Field(default=120, gt=0, le=3600)
     max_transient_retries: int = Field(default=2, ge=0, le=10)
     approval_ttl_minutes: int = Field(default=60, gt=0)
-    sse_heartbeat_seconds: int = Field(default=2, gt=0, le=60)
+    sse_heartbeat_seconds: int = Field(default=1, gt=0, le=60)
     sse_batch_size: int = Field(default=100, gt=0, le=1000)
     sse_retry_milliseconds: int = Field(default=1000, gt=0, le=60_000)
 

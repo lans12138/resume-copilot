@@ -148,11 +148,26 @@ class _RedisSubscription:
         if not self._ready:
             await self._pubsub.subscribe(self._channel)
             self._ready = True
-        # get_message polls; on timeout it returns None and the SSE loop re-reads
-        # the database. We ignore the payload (design: no business data on the wire).
-        await self._pubsub.get_message(
-            ignore_subscribe_messages=True, timeout=timeout
-        )
+        # Enforce the heartbeat bound with asyncio.wait_for rather than trusting
+        # get_message's own timeout. In some redis.asyncio versions (and in the
+        # shared-Redis e2e stack) get_message ignored its timeout and blocked until
+        # a real message arrived; the cross-process Pub/Sub wake from the worker was
+        # also unreliable, so the SSE loop hung here and the §13.2 PostgreSQL
+        # re-read never fired. wait_for guarantees the loop returns after `timeout`
+        # and re-reads the run, discovering RUN_COMPLETED.
+        try:
+            await asyncio.wait_for(
+                self._pubsub.get_message(ignore_subscribe_messages=True),
+                timeout,
+            )
+        except TimeoutError:
+            return
+        except Exception:
+            # A broken Pub/Sub read (e.g. a cancelled socket read) must not abort the
+            # stream: the SSE loop re-reads PostgreSQL and still discovers the terminal
+            # state (§13.2). A genuine external cancellation propagates as
+            # CancelledError and is intentionally not swallowed.
+            return
 
     async def aclose(self) -> None:
         try:
