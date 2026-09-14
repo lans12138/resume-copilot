@@ -56,8 +56,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\validate_web.ps1
 |---|---|---|
 | `validate_document_pipeline.ps1` | ✅ | 真 PostgreSQL+Redis 跑 `tests/integration/test_document_pipeline_e2e.py` |
 | `validate_web.ps1` | ✅ | Playwright 三条主路径 |
-| `validate_documents.ps1` | ❌ | **含中文字面量，PS 5.1 按 ANSI 解码必报 ParserError**；只有 `pwsh`（UTF-8）能跑 → 交给 CI |
-| `project.ps1 verify` | ❌ | 内部依赖 `pwsh` |
+| `validate_documents.ps1` | ✅ | 2026-09-14 起修好了编码，本机可跑，输出与 CI 逐项一致 |
+| `project.ps1 verify` | ❌ | 内部 `Invoke-Checked 'pwsh'`，本机无该可执行文件 |
+
+`validate_documents.ps1` 之前只能靠 CI，原因有两个，都已修（改动对 pwsh 是 no-op）：
+
+1. 脚本自身含中文字面量，**无 BOM 的 UTF-8 会被旧引擎按 ANSI 解码，在第一行前就 ParserError** → 文件加 UTF-8 BOM。
+2. 读中文文档时 `Get-Content` 默认 ANSI，**多字节序列错位会吞掉行首**（`\n`/`~` 被当成双字节字符的尾字节），
+   导致代码围栏计数失真、报出根本不存在的「围栏未闭合」→ 所有 `Get-Content` 显式 `-Encoding UTF8`。
+
+排查这类「本机说文档坏了、CI 说没事」的问题时，先怀疑编码：用 `python` 按字节统计一遍
+（如 `open(p,'rb').read().decode('utf-8')` 后数 `^~~~` 行），别信 ANSI 解码下的行结构。
+
+### 没有本地 pwsh，也要能验 pwsh 路径
+
+改了探针脚本、或怀疑「本机过 / CI 不过」时，用官方镜像在真引擎里跑（本机无该可执行文件也能验）：
+
+```bash
+docker run --rm -v D:/code/resume:/repo -w /repo \
+  mcr.microsoft.com/powershell:lts-debian-12 pwsh -NoProfile -File ./tests/validate_documents.ps1
+```
+
+两个坑：镜像**没有 ENTRYPOINT**，必须显式写 `pwsh`（否则报 `exec: "-NoProfile": executable file not found in $PATH`）；
+`Select-Object` / 管道会吞掉失败输出，要 `*> D:\code\x.log` 落盘再按 `utf-16` 解码读。
 
 > 别用 `& .\tests\x.ps1` 直接调，会被执行策略拦（`UnauthorizedAccess`）。`pwsh` 不存在时的报错是
 > `无法将"pwsh"项识别为 cmdlet`，不是探针失败。
