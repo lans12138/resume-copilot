@@ -41,6 +41,7 @@ from uuid import UUID
 from celery import Task, shared_task  # type: ignore[import-untyped]
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.app.agent.enqueuer import ExecutionIntent as ExecutionIntent
 from backend.app.agent.models import AgentRun, RunStatus, RunType, is_terminal
 from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.settings import get_settings
@@ -51,20 +52,6 @@ from backend.app.reports.repository import SqlReportRepository
 from backend.app.reports.service import ReportService
 
 logger = logging.getLogger(__name__)
-
-
-class ExecutionIntent(StrEnum):
-    """What the caller wants to do with the run it is claiming.
-
-    ``START`` drives a run that has been enqueued but has not begun; ``RETRY``
-    re-drives one that already failed. Both are explicit because they are the only
-    two ways a run may *enter* execution, and the distinction is what keeps
-    ``WAITING_APPROVAL`` untouchable from an ordinary delivery: a run parked at its
-    human gate accepts neither.
-    """
-
-    START = "start"
-    RETRY = "retry"
 
 
 class ClaimDecision(StrEnum):
@@ -142,10 +129,21 @@ async def claim_run(
     return run, decision
 
 
-async def _execute_match_run_async(resources: RuntimeResources, run_id: UUID) -> dict[str, Any]:
+async def _execute_match_run_async(
+    resources: RuntimeResources,
+    run_id: UUID,
+    intent: ExecutionIntent = ExecutionIntent.START,
+) -> dict[str, Any]:
+    """Claim the run with ``intent`` and drive it to a terminal state.
+
+    ``intent`` is the whole reason the retry path works: a retry publication
+    arrives with a ``FAILED`` run still in the row, which is exactly what a
+    redelivery of the first pass looks like too. Only the caller knows which one it
+    published, so the claim cannot be left to infer it from status alone.
+    """
     session = resources.session_factory()
     try:
-        run, decision = await claim_run(session, run_id, intent=ExecutionIntent.START)
+        run, decision = await claim_run(session, run_id, intent=intent)
         if run is None or decision is not ClaimDecision.CLAIMED:
             await session.rollback()
             logger.info(
@@ -178,14 +176,23 @@ async def _execute_match_run_async(resources: RuntimeResources, run_id: UUID) ->
         await resources.close()
 
 
-def _execute_match_run(run_id: str) -> dict[str, Any]:
+def _execute_match_run(run_id: str, intent: str) -> dict[str, Any]:
     resources = RuntimeResources.build(get_settings())
-    return asyncio.run(_execute_match_run_async(resources, UUID(run_id)))
+    return asyncio.run(
+        _execute_match_run_async(resources, UUID(run_id), ExecutionIntent(intent))
+    )
 
 
 @shared_task(name="agent.execute_match_run", bind=True)  # type: ignore[untyped-decorator]
-def execute_match_run(self: Task, run_id: str) -> dict[str, Any]:
+def execute_match_run(
+    self: Task, run_id: str, intent: str = ExecutionIntent.START.value
+) -> dict[str, Any]:
     """Drive a job-level MatchRun to its terminal state.
+
+    ``intent`` travels as a plain string so the message stays serialisable; the
+    claim narrows it back to an :class:`ExecutionIntent`. Passing it explicitly is
+    the point — a retry publication and a redelivery of the first pass both arrive
+    against a ``FAILED`` row, and only the publisher knows which is which.
 
     Retries follow §14.2: transient failures back off exponentially with jitter
     and give up after the configured budget. Exhausting the budget does *not*
@@ -193,7 +200,7 @@ def execute_match_run(self: Task, run_id: str) -> dict[str, Any]:
     it, and the caller's next delivery (or FIN-006's republish scan) decides.
     """
     try:
-        return _execute_match_run(run_id)
+        return _execute_match_run(run_id, intent)
     except Exception as error:  # noqa: BLE001 - Celery retry policy boundary
         settings = get_settings()
         attempt_no = self.request.retries

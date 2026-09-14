@@ -20,7 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request
 
 from backend.app.agent.checkpoint import SqlCheckpointer
-from backend.app.agent.enqueuer import CeleryRunEnqueuer
+from backend.app.agent.enqueuer import CeleryRunEnqueuer, ExecutionIntent
 from backend.app.agent.models import AgentRun, RunStatus, RunType
 from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.agent.service import RunService
@@ -52,7 +52,7 @@ router = APIRouter(prefix="/api/v1", tags=["match-runs"])
 ActorDep = Annotated[Actor, Depends(get_current_actor)]
 
 
-def _publish_match_run(run: AgentRun) -> None:
+def _publish_match_run(run: AgentRun, *, intent: ExecutionIntent = ExecutionIntent.START) -> None:
     """Deliver the execution task after the run is committed (§14.4).
 
     A broker failure must not fail the request: the run is already durable, and
@@ -60,12 +60,16 @@ def _publish_match_run(run: AgentRun) -> None:
     scan (FIN-006) recovers it without any extra flag. Raising here would turn a
     recoverable Redis outage into a 5xx for a run that unambiguously exists.
 
-    ``FAILED`` + ``retryable`` is equally safe to republish: the worker's claim
-    refuses a run that is mid-pass, so a speculative re-delivery can only be
-    accepted when the run really is waiting for one.
+    ``intent`` is the one thing that makes a retry real: ``FAILED`` looks exactly
+    like a redelivery of the first pass to the worker, so only the *published*
+    intent lets it tell "retry, please" from "duplicated message, ignore". It is
+    carried as a task argument by ``enqueue_match_run`` and read back by the
+    claim, never inferred from the stored status.
     """
     try:
-        CeleryRunEnqueuer(celery_app).enqueue_match_run(run.id, attempt=run.attempt)
+        CeleryRunEnqueuer(celery_app).enqueue_match_run(
+            run.id, attempt=run.attempt, intent=intent
+        )
     except Exception:  # noqa: BLE001 - a Redis outage must not fail a committed run
         logger.warning("match_run.publish_failed run_id=%s", run.id, exc_info=True)
 
@@ -200,7 +204,7 @@ async def retry_match_run(
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         agent_run.attempt += 1
         await session.commit()
-        _publish_match_run(agent_run)
+        _publish_match_run(agent_run, intent=ExecutionIntent.RETRY)
         result = MatchRunAccepted(
             run_id=agent_run.id, job_id=match_run.job_id, status=agent_run.status.value
         )

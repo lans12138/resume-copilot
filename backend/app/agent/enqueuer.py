@@ -13,10 +13,30 @@ database claim (``agent.tasks.claim_run``); this module only carries the work.
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
 from celery import Celery  # type: ignore[import-untyped]
+
+
+class ExecutionIntent(StrEnum):
+    """Why this delivery was published — the claim's first question (§5.6, §14.1).
+
+    Lives here rather than in ``agent.tasks`` because it is the contract *between*
+    the two sides: the request path decides it, the worker consumes it. Keeping it
+    on the port lets ``tasks`` import ``enqueuer`` without a cycle.
+
+    The two values must stay distinct. A ``FAILED`` run is not by itself an
+    invitation to execute: if ``START`` accepted it, an at-least-once redelivery —
+    or FIN-006's republish scan, which sweeps ``CREATED`` — would silently re-run
+    something a human was supposed to retry explicitly. Conversely ``RETRY`` must
+    not accept anything but ``FAILED``, or "retry" would become a way to restart a
+    run that is mid-pass or sitting at an approval gate.
+    """
+
+    START = "start"
+    RETRY = "retry"
 
 
 def operation_key(run_id: UUID, attempt: int, resume_version: str | None = None) -> str:
@@ -42,7 +62,9 @@ def operation_key(run_id: UUID, attempt: int, resume_version: str | None = None)
 class RunEnqueuer(Protocol):
     """Hands a persisted Run to the worker that will execute it."""
 
-    def enqueue_match_run(self, run_id: UUID, *, attempt: int) -> None: ...
+    def enqueue_match_run(
+        self, run_id: UUID, *, attempt: int, intent: ExecutionIntent
+    ) -> None: ...
 
 
 class CeleryRunEnqueuer:
@@ -52,6 +74,11 @@ class CeleryRunEnqueuer:
     worker log and a republish (§14.4, FIN-006) is observable through the result
     backend. It is *not* an exactly-once mechanism: the Redis broker does not
     deduplicate by task id, and the database claim remains the guard.
+
+    ``intent`` travels as a task argument, not as a second task name: one task
+    whose behaviour is decided by the claim keeps a single place where "may this
+    delivery run?" is answered (§14.1's operation key names the slice; the intent
+    names what is being asked of it).
     """
 
     MATCH_RUN_TASK = "agent.execute_match_run"
@@ -59,9 +86,11 @@ class CeleryRunEnqueuer:
     def __init__(self, celery_app: Celery) -> None:
         self._celery_app = celery_app
 
-    def enqueue_match_run(self, run_id: UUID, *, attempt: int) -> None:
+    def enqueue_match_run(
+        self, run_id: UUID, *, attempt: int, intent: ExecutionIntent
+    ) -> None:
         self._celery_app.send_task(
             self.MATCH_RUN_TASK,
-            args=[str(run_id)],
+            args=[str(run_id), intent.value],
             task_id=operation_key(run_id, attempt),
         )

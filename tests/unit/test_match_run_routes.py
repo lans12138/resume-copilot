@@ -37,19 +37,56 @@ def _run(*, attempt: int = 1) -> AgentRun:
 def test_publish_delivers_the_runs_own_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
     """The operation key (run + attempt) has to come from the row, not the caller.
 
-    That is what makes a retry's delivery distinguishable from the first pass's.
+    That is what makes a retry's delivery distinguishable from the first pass's,
+    and the caller's intent is what lets the worker tell "retry, please" apart from
+    a duplicated first-pass message (both arrive against a ``FAILED`` row).
     """
-    delivered: list[tuple[UUID, int]] = []
+    delivered: list[tuple[UUID, int, Any]] = []
 
-    def _record(self: CeleryRunEnqueuer, run_id: UUID, *, attempt: int) -> None:
-        delivered.append((run_id, attempt))
+    def _record(
+        self: CeleryRunEnqueuer, run_id: UUID, *, attempt: int, intent: Any
+    ) -> None:
+        delivered.append((run_id, attempt, intent))
 
     monkeypatch.setattr(CeleryRunEnqueuer, "enqueue_match_run", _record)
     run = _run(attempt=3)
 
     _publish_match_run(run)
 
-    assert delivered == [(run.id, 3)]
+    assert delivered == [(run.id, 3, intent_start())]
+
+
+def test_publish_forwards_the_retry_intent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry route re-drives a FAILED run, and only the intent says so.
+
+    ``FAILED`` looks identical to a redelivery of the first pass at the worker, so
+    the route must publish the *retry* intent explicitly — never let it collapse to
+    the START default, or the worker's claim would refuse the run as already
+    terminal and the retry would silently no-op (the CI bug this pins).
+    """
+    from backend.app.agent.enqueuer import ExecutionIntent
+
+    delivered: list[Any] = []
+
+    def _record(
+        self: CeleryRunEnqueuer, run_id: UUID, *, attempt: int, intent: Any
+    ) -> None:
+        delivered.append(intent)
+
+    monkeypatch.setattr(CeleryRunEnqueuer, "enqueue_match_run", _record)
+    run = _run(attempt=2)
+
+    _publish_match_run(run, intent=ExecutionIntent.RETRY)
+
+    assert delivered == [ExecutionIntent.RETRY]
+
+
+def intent_start() -> Any:
+    from backend.app.agent.enqueuer import ExecutionIntent
+
+    return ExecutionIntent.START
 
 
 def test_publish_failure_does_not_escape_to_the_request(
@@ -63,7 +100,9 @@ def test_publish_failure_does_not_escape_to_the_request(
     looks for — hence a warning, never an exception.
     """
 
-    def _explode(self: CeleryRunEnqueuer, run_id: UUID, *, attempt: int) -> None:
+    def _explode(
+        self: CeleryRunEnqueuer, run_id: UUID, *, attempt: int, intent: Any
+    ) -> None:
         raise ConnectionError("redis is down")
 
     monkeypatch.setattr(CeleryRunEnqueuer, "enqueue_match_run", _explode)
@@ -77,7 +116,12 @@ def test_publish_failure_does_not_escape_to_the_request(
 
 
 def test_celery_enqueuer_uses_the_operation_key_as_task_id() -> None:
-    """Delivery identity is observable: same slice, same id; new slice, new id."""
+    """Delivery identity is observable: same slice, same id; new slice, new id.
+
+    The intent travels as the second task argument so the worker can read it back;
+    the first argument plus ``attempt`` form the task id that makes a redelivery
+    recognisable.
+    """
     sent: list[dict[str, Any]] = []
 
     class _StubCelery:
@@ -86,12 +130,12 @@ def test_celery_enqueuer_uses_the_operation_key_as_task_id() -> None:
 
     enqueuer = CeleryRunEnqueuer(_StubCelery())
     run_id = uuid4()
-    enqueuer.enqueue_match_run(run_id, attempt=1)
-    enqueuer.enqueue_match_run(run_id, attempt=1)
-    enqueuer.enqueue_match_run(run_id, attempt=2)
+    enqueuer.enqueue_match_run(run_id, attempt=1, intent=intent_start())
+    enqueuer.enqueue_match_run(run_id, attempt=1, intent=intent_start())
+    enqueuer.enqueue_match_run(run_id, attempt=2, intent=intent_start())
 
     assert [item["name"] for item in sent] == ["agent.execute_match_run"] * 3
-    assert [item["args"] for item in sent] == [[str(run_id)]] * 3
+    assert [item["args"] for item in sent] == [[str(run_id), "start"]] * 3
     task_ids = [item["task_id"] for item in sent]
     assert task_ids[0] == task_ids[1] == f"{run_id}:1"
     assert task_ids[2] == f"{run_id}:2"
