@@ -35,7 +35,7 @@
 
 ## 进度校准（2026-09-07，重要 — 修正 README/旧记忆的"已完成"表述）
 `编码实现计划.md` v1.1（2026-09-07 校准，基线 07f18b8）自认项目**未完成**：IMP-001~030 虽全部提交且 249 测试通过，但属"核心演示闭环完成、生产运行闭环未完成"。
-- 诚实 PARTIAL 域（§19.2）：文档解析→Profile 前端接线、HTTP 请求级幂等（FIN-001）、Celery Worker/Scheduler 占位（FIN-002）、Run 后台异步执行仍同步（FIN-005）、SSE 缺 Nginx Bearer 全栈探针（FIN-011）、完整 Compose/CI 缺失（FIN-012/013）。（FIN-007 Evaluation 表/API/Task/页面、FIN-008 真实 Qwen 适配器、FIN-009 Agent 运行时对齐、FIN-010 非种子浏览器主路径均已于 2026-09-15 补齐或正式收敛，不再属此列。）
+- 诚实 PARTIAL 域（§19.2）：文档解析→Profile 前端接线、HTTP 请求级幂等（FIN-001）、Celery Worker/Scheduler 占位（FIN-002）、Run 后台异步执行仍同步（FIN-005）、SSE 缺 Nginx Bearer 全栈探针（归 FIN-012）、完整 Compose/CI 缺失（FIN-012/013）。（FIN-007 Evaluation 表/API/Task/页面、FIN-008 真实 Qwen 适配器、FIN-009 Agent 运行时对齐、FIN-010 非种子浏览器主路径、FIN-011 故障/撤权/SSE 浏览器矩阵均已于 2026-09-15 补齐或正式收敛，不再属此列。）
 - 剩余 13 个 FIN（FIN-001~013），理想工期 16.5 天 + 2 缓冲；推荐顺序见 §20.4。
 - 结论：README 与旧 MEMORY.md"IMP 全部提交=MVP 完成"有误导，对外展示作品集前需先补齐 FIN-001~013，或显式声明 MVP 边界为"种子数据演示闭环"。
 
@@ -88,7 +88,14 @@
   - **`tests/check_probe_python.ps1`** 在静态门禁里校验探针内嵌的 Python：① `[Parser]::ParseInput` 保证 PS 层可解析；② 展开后**残留 `$变量` 即报错**（替换表漂移检测，已用反向用例验证会触发）；③ 用**开发镜像里的 CPython** `ast.parse`（不引入主机 Python 依赖，符合既有 `validate_*.ps1` 惯例）。为让 fixture 检查能在镜像内跑，`deploy/docker/backend.Dockerfile` 加了 `COPY scripts ./scripts`。
   - **`apps/web/tsconfig.node.json` 的 `include` 补上 `e2e/**/*.ts`** —— 此前 spec 完全不受类型检查。
   - 门禁：`tsc -b` 干净、`vitest run` **113 passed (22 files)**、fixture 检查通过、三个 PS 脚本 `PARSE_OK`、内嵌 Python 用本地 HTTP server 证明 multipart 请求体正确。**Docker 本机未运行 ⇒ 探针与 E2E 仍只能 CI 验证**。
-- **FIN-011~013 仍 TODO（3 项）**：故障/SSE 矩阵、完整 Compose+CI、发布收口。缺口集中在「生产运行闭环」，不是核心演示闭环。
+- **FIN-011 DONE（2026-09-15，commits `8a558ff` + `5e2ab41`）**：故障与安全浏览器矩阵。
+  - **性质：后端已覆盖，缺的是浏览器一半**。§19.2 原话就是「撤权和断线恢复缺浏览器级验证」；后端语义早有 **17 项精确单测**（`test_approval.py` 8 + `test_sse.py` 9，含 `test_midstream_revocation_closes_stream` 断言扣留为序列 `[0,1]`）。**Nginx Bearer SSE 全栈探针按计划书原文属 FIN-012 第 2 项**，别误并进 FIN-011。
+  - **⚠️ 修复了一个真实缺陷：`sse.ts` 跳号后永远不重连。** gap 分支先 `stop("client")`（置 `closed=true` **并 `abort()`**）再 `reconnectFrom()`，而 `open()` 第一行 `if (closed) return` ⇒ 重连是**死代码**，与该文件自述契约矛盾。修法：新增 `abandonStream()`（废弃当前流但**不结束会话**），`AbortController` 由 `const` 改 `let` **逐次重建**（被 abort 过的 controller 会毒化后续所有尝试），`scheduleReconnect` 同样重建。**已用临时回退验证测试确实会失败**（`expected spy to be called 2 times, but got 1`），不是空转测试。
+  - **测试分层原则（可复用）**：能在活栈真跑的**真跑**（REJECT / EDIT / 重复决定 / 真实在线撤权）；只有需要打坏基础设施的（503、丢 Redis 通知、需第二方参与的撤权）才 `page.route` 注入，且用例名一律带 **`INJECTED:`** 前缀，让读者能分辨哪些断言基于真实服务端响应。注入的 SSE 帧**按 `backend/app/sse/schemas.py` 的真实线格式构造**并逐字段比对过（顺序 / 尾部空行 / 10 个 payload 键全一致，心跳与撤销帧逐字节相同）。
+  - **真实撤权用例**：SSE 处于「实时同步」时经 `DELETE /jobs/{id}/assignments/{user_id}` 撤当前 HR 的授权，断言下一次心跳（`sse_heartbeat_seconds=1`，故 ~1s 内）返回 `SSE_AUTH_REVOKED` 且前端显示「授权已撤销」。**`finally` 必须恢复授权**（共享种子数据，否则级联破坏其它 spec）；恢复时容忍 409 `ASSIGNMENT_EXISTS`。
+  - **踩坑**：① **REJECT 后的终态是 `COMPLETED` 不是 `CANCELLED`**（`approvals/service.py:285-291` 调 `complete_run(reason="ACTION_REJECTED")`，页面渲染 `completion_reason`）；② **`page.route` glob 必须匹配真实 URL** —— 筛选为默认 `"ALL"` 时 `listJobs` 请求 `/api/v1/jobs` **不带查询串**，写 `**/api/v1/jobs?**` 永远匹配不上、测试会**静默穿透真 API 变假绿**，应用正则 `/\/api\/v1\/jobs(\?.*)?$/`；③ `request.headers()` **小写化**，读 `Last-Event-ID` 用 `await request.allHeaders()`；④ 编辑表单提交按钮是「应用修改」、标签「编辑后参数（JSON）」。
+  - 门禁：`vitest run` **118 passed (22 files)**（+5）、`tsc -b` 干净、`playwright test --list` 18 tests（+13）。**Docker 本机未运行 ⇒ 浏览器矩阵只 CI 验证；客户端不变量本机已跑。**
+- **FIN-012~013 仍 TODO（2 项）**：完整 Compose+CI（含 FIN-011 留下的 Nginx Bearer SSE 探针）、发布收口。缺口集中在「生产运行闭环」，不是核心演示闭环。
 - 仓库已 PUBLIC（github.com/lans12138/resume-copilot）；远端 `local-backup/main` 为备份分支；push 需显式 token URL（plain `git push` 挂起）。**注意 `project.ps1 verify` 确实包含 `validate_document_pipeline.ps1`，但普通 pytest 里 4 个集成用例恒 skip（缺 `DATABASE_URL`），只有该探针真跑它们。**
 - **API 面已校准（2026-09-14，commit bd3d926）**：设计文档原先写的候选人扁平路径（`/candidates`、`/candidates/{id}`、`PATCH /candidate-profiles/{id}`）实现里不存在，且 3 个已实现读端点（`GET /documents/{id}/content`、`GET /match-runs/{id}/reports`、`GET /auth/me`）两份文档都没写。已按**实现**对齐概要与详细设计，`api_methods` **40 → 46**（`validate_documents.ps1` 断言同步）。需求基线的 3 条扁平路径**故意没改**，改为在详细设计 §12.3 记录偏差（探针要求需求资源路径逐字出现在详细设计，删掉会同时破门禁和掩盖分歧；`resources=27` 仍满足）。实现路由全量枚举可用 `backend/app/**/routes.py` 的 `APIRouter(prefix=)` + 装饰器正则扫出。
 - **文档门禁本机可跑（2026-09-14 起）**：`tests/validate_documents.ps1` 加了 UTF-8 BOM（否则 PS 5.1 按 ANSI 解码、第一行前 ParserError）且所有 `Get-Content` 显式 `-Encoding UTF8`（否则多字节错位吞行首，围栏计数失真、报出并不存在的「围栏未闭合」）。**对 pwsh 是 no-op**，已在容器内 pwsh 7 复验。装 pwsh 路径的办法：`docker run --rm -v D:/code/resume:/repo -w /repo mcr.microsoft.com/powershell:lts-debian-12 pwsh -NoProfile -File ./tests/validate_documents.ps1`（镜像无 ENTRYPOINT，必须写 `pwsh`）。
@@ -110,6 +117,11 @@
 - **`pytest.mark.anyio` 在这仓库会静默跳过全部测试**：没装 anyio pytest 插件（`import pytest_anyio` → ModuleNotFoundError）。必须用仓库惯例「测试内嵌 `async def _run() -> None` + `asyncio.run(_run())`」。
 - **隐式字符串拼接比 `*` 结合更紧**：`"=" * 68` 写在隐式拼接表达式里会把**整条已拼接的串**重复 68 次（`_report_header` 踩过）。要多行文本用 `"\n".join([...])` + 独立变量存重复片段。
 - **`caplog` 拿不到结构化日志字段**：字段挂在 `record` 属性上，不在渲染后的消息里，`caplog.text` 查不到。要断言凭据不外泄，得直接挂 `logging.Handler` 扫 `record.getMessage()` + `vars(record)`。
+- **Playwright `page.route` 的 glob 必须对着真实请求 URL 核对，否则测试静默变假绿**（2026-09-15，FIN-011）。写过 `**/api/v1/jobs?**` 想拦截岗位列表，但筛选为默认 `"ALL"` 时 `client.ts:89` 请求的是 `/api/v1/jobs`**不带查询串** ⇒ 路由不匹配、请求穿透到真 API、用例照样「通过」。**Glob 不匹配不会报错，只会让你测了个寂寞。** 凡是 `page.route`，先确认组件实际发出的路径，并优先用正则（如 `/\/api\/v1\/jobs(\?.*)?$/`，同时能排除 `/jobs/{id}` 子资源）。
+- **`page.route` 里读请求头要用 `await request.allHeaders()`**：`request.headers()` 会把名字**小写化**，读 `Last-Event-ID` 这类名字时容易踩空。
+- **`stop()` 之后再 `open()` 是死代码**（2026-09-15，SSE 跳号重连真实缺陷）。把「结束会话」与「废弃当前流」写成同一个函数，就会出现「先置 `closed=true` / `abort()`，再调 `open()`」——而 `open()` 开头的 `if (closed) return` 让它直接返回。**任何「中止后立即重启」的流程，都要让中止不变量（closed 标记、AbortController）是逐次可重建的**：`const controller` 改成 `let`，被 abort 过的 controller 会毒化后续所有尝试。此类缺陷单靠读代码容易放过（注释还写着「会重连」），**要写一条断言「第二次请求真的发生了」的测试**；并用**临时回退修复**确认测试会失败。
+- **业务结论 ≠ 工程故障，测试断言别混**：REJECT 一个审批，run 的终态是 **`COMPLETED`**（`completion_reason=ACTION_REJECTED`），**不是 `CANCELLED`**。写「驳回后应显示已取消」是想当然。
+- **SSE 的线格式以 `backend/app/sse/schemas.py` 为准**：`event: <type>\nid: <sequence>\ndata: <json>\n\n`，心跳是 `:\n\n`，撤销是 `event: SSE_AUTH_REVOKED\ndata: {"reason":"access_revoked"}\n\n`；`data` 的 10 个键见 `AgentEvent.to_sse_dict`。注入式测试要**按真实格式构造帧并逐字段比对**，否则断言的是自己发明的协议。心跳间隔 `sse_heartbeat_seconds` 默认 **1 秒**（撤权/丢通知都在 ~1s 内被下一次心跳发现）。
 - **别在测试里指向真实端口做「预计失败」的断言**（如 `http://127.0.0.1:1`）：会真建 socket，耗时取决于 OS 拒绝连接的速度（实测把一个测试文件从 0.9s 拖到 9s），且依赖宿主网络栈。用 `httpx2.MockTransport` 完全替代。
 - **同一 `mock_model_mode` 开关必须由两个工厂给出一致答案**：曾出现 chat 工厂静默返回 Fake、embedding 工厂抛 `NotImplementedError` 的分裂。任何「Fake/Real 由配置切换」的工厂都要有一条断言两者一致性的测试。
 - **`EmbeddingDimensionError` 定义在 `infrastructure/embedding.py`**，`candidates/embedding_service.py` 只是**再导出**；从后者 import 会让 mypy 报 `attr-defined`，要从定义处 import。
