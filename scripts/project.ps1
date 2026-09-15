@@ -14,6 +14,7 @@ param(
         'job-test',
         'document-upload-test',
         'application-entry-test',
+        'nonseed-flow-test',
         'parser-test',
         'migration-test',
         'seed',
@@ -155,6 +156,9 @@ try {
         'application-entry-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
         }
+        'nonseed-flow-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_nonseed_flow.ps1')
+        }
         'parser-test' {
             Build-BackendDevelopmentImage
             Invoke-BackendTool @('pytest', '-q', 'tests/unit/test_parsers.py')
@@ -201,6 +205,7 @@ try {
         }
         'verify' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_project_structure.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/check_probe_python.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_docker_recovery.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_local_env.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_compose_stack.ps1')
@@ -215,7 +220,9 @@ try {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_auth.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_nonseed_flow.ps1')
             Build-BackendDevelopmentImage
+            Invoke-BackendTool @('python', 'scripts/generate_e2e_fixtures.py', '--check')
             Invoke-BackendTool @('ruff', 'check', 'backend', 'apps', 'tests/unit', 'tests/integration')
             Invoke-BackendTool @('mypy', 'backend', 'apps', 'tests/unit')
             Invoke-BackendTool @('pytest', '-q')

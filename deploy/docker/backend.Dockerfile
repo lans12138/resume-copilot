@@ -14,6 +14,7 @@ RUN python -m pip install --no-cache-dir --requirement requirements-dev.lock
 COPY apps ./apps
 COPY backend ./backend
 COPY tests ./tests
+COPY scripts ./scripts
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY pyproject.toml ./
