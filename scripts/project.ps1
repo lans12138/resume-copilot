@@ -15,6 +15,8 @@ param(
         'document-upload-test',
         'application-entry-test',
         'nonseed-flow-test',
+        'nginx-proxy-test',
+        'one-command-up-test',
         'parser-test',
         'migration-test',
         'seed',
@@ -156,6 +158,12 @@ try {
         'application-entry-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_application_entry.ps1')
         }
+        'nginx-proxy-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_nginx_proxy.ps1')
+        }
+        'one-command-up-test' {
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_one_command_up.ps1')
+        }
         'nonseed-flow-test' {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_nonseed_flow.ps1')
         }
@@ -233,6 +241,13 @@ try {
             Invoke-WebTool @('run', 'build')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_web.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_documents.ps1')
+            # FIN-012: the two claims that can only be made against a running
+            # stack. The Nginx probe talks to the public entry point only, so it
+            # covers the proxy contract (Bearer passthrough + unbuffered SSE);
+            # the one-command probe drives scripts/start_stack.ps1 itself so the
+            # documented startup path cannot rot independently of the gate.
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_nginx_proxy.ps1')
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_one_command_up.ps1')
         }
     }
 }
