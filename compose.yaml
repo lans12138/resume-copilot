@@ -5,6 +5,11 @@ x-backend-build: &backend-build
   dockerfile: deploy/docker/backend.Dockerfile
   target: runtime
 
+x-web-build: &web-build
+  context: .
+  dockerfile: deploy/docker/web.Dockerfile
+  target: runtime
+
 x-backend-environment: &backend-environment
   APP_ENV: ${APP_ENV:-local}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -35,6 +40,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # The API serves schema-backed routes, so it must not accept traffic before
+      # the migration chain has run. The one-shot services below finish and exit
+      # 0, which is what ``service_completed_successfully`` waits for.
+      migrate:
+        condition: service_completed_successfully
+        required: false
     healthcheck:
       test:
         - CMD
@@ -123,19 +134,27 @@ services:
   migrate:
     image: resume-copilot-api:local
     build: *backend-build
-    profiles:
-      - tools
+    # Not behind a profile: ``docker compose up --wait`` has to bring the schema
+    # to head on a fresh volume, so migration is part of the default startup
+    # rather than an extra step the operator is trusted to remember. Compose
+    # treats the service as a one-shot because it exits; ``api`` gates on
+    # ``service_completed_successfully``.
     restart: "no"
     environment: *backend-environment
     command:
       - alembic
       - upgrade
       - head
+    volumes:
+      - resume_storage:/data/resumes
     networks:
       - backend
     depends_on:
       postgres:
         condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+        required: false
     security_opt:
       - no-new-privileges:true
 
@@ -158,6 +177,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
 
@@ -207,6 +228,54 @@ services:
     # scheduler log for "Sending due task maintenance.expire_approvals" within
     # the beat interval.
     stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: resume-copilot-web:local
+    build: *web-build
+    restart: unless-stopped
+    environment:
+      # The static bundle is origin-relative (it calls /api/v1/... on its own
+      # origin), so it needs no API address baked in. Only the proxy does.
+      API_UPSTREAM: http://api:8000
+      NGINX_PORT: "8080"
+    networks:
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+    # Readiness is answered by Nginx itself (/healthz), so a restarting API does
+    # not take the static host out of service — the SPA stays reachable and can
+    # render its own "service unavailable" state.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget --quiet --tries=1 --spider "http://127.0.0.1:8080/healthz" || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  # ── Probe sidecar ──────────────────────────────────────────────────────────
+  # A Python interpreter that can talk to ``web`` from inside the compose
+  # network, for tests/validate_nginx_proxy.ps1 only.
+  #
+  # It is a separate service rather than ``apk add python3`` in the web image
+  # because the runtime image is deliberately toolchain-free, and because a probe
+  # that depends on the artefact under test having a debugger inside it would
+  # stop being an independent check. Same pinned base as storage-init, so it adds
+  # no new image layer to pull.
+  web-probe:
+    image: python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+    profiles:
+      - tools
+    restart: "no"
+    networks:
+      - backend
     security_opt:
       - no-new-privileges:true
 

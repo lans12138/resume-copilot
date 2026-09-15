@@ -7,6 +7,14 @@ services:
         host_ip: 127.0.0.1
         protocol: tcp
 
+  web:
+    ports:
+      - name: web-public-entry
+        target: 8080
+        published: "${WEB_HOST_PORT:-8080}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+
   postgres:
     ports:
       - name: postgres-debug
