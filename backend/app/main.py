@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request, Response
 from pydantic import JsonValue
@@ -95,7 +96,11 @@ def create_app(
         return {"status": "ok", "request_id": get_request_id()}
 
     @application.get("/api/v1/health/ready", tags=["health"])
-    async def readiness(request: Request) -> dict[str, JsonValue]:
+    # ``Any`` rather than ``JsonValue``: FastAPI emits ``JsonValue`` as a $ref to
+    # a schema it never defines, so the generated document carried a dangling
+    # reference that strict clients (and tests/unit/test_openapi_contract.py)
+    # reject. The runtime payload is unchanged.
+    async def readiness(request: Request) -> dict[str, Any]:
         resources: RuntimeResources = request.app.state.resources
         ready, dependencies = await check_readiness(resources)
         if not ready:
