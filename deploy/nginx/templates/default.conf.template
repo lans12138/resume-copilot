@@ -1,0 +1,137 @@
+# Single public entry point (FIN-012 item 2).
+#
+# ``${API_UPSTREAM}`` and ``${NGINX_PORT}`` are expanded by the Nginx image
+# entrypoint (envsubst) from the container environment, so the upstream is a
+# deployment input rather than a build-time constant.
+#
+# The frontend never learns the API's address: it issues same-origin requests to
+# /api/v1/... and this proxy decides where they go. That is what allows the
+# browser bundle to be built once and deployed anywhere.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen ${NGINX_PORT} default_server;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # Readiness for the compose health gate. Answered by Nginx itself: an
+    # unhealthy API must not make the static host unreachable, because a stale
+    # bundle that shows "服务不可用" is more useful than a connection refused.
+    #
+    # ``default_type`` (not ``add_header Content-Type``) is what sets the type of
+    # a ``return``: Content-Type is a content header, and adding one via
+    # ``add_header`` would emit a second conflicting header rather than replace
+    # the generated one.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        include /etc/nginx/snippets/security-headers.conf;
+        return 200 "ok\n";
+    }
+
+    # ── API ────────────────────────────────────────────────────────────────────
+    # Authorization is forwarded implicitly: Nginx passes all client request
+    # headers upstream, so the Bearer token the SPA sends arrives at the API
+    # unmodified. Nothing here rewrites or strips it.
+    location /api/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+
+        # 4xx/5xx bodies are JSON problem details produced by the API; passing
+        # them through keeps ``code``/``request_id`` available to the client.
+        proxy_intercept_errors off;
+    }
+
+    # ── SSE ───────────────────────────────────────────────────────────────────
+    # Both event streams are covered. This block exists because the generic
+    # /api/ block above would otherwise buffer the stream:
+    #
+    # * proxy_buffering off  — forward each chunk as it arrives, so the client
+    #   sees heartbeats and revocation frames live.
+    # * proxy_cache off      — never let a shared cache hold an authenticated
+    #   stream.
+    # * gzip off             — text/event-stream must not be compressed here;
+    #   gzip both buffers and breaks framing.
+    # * chunked_transfer_encoding on + Connection "" — the response is unbounded,
+    #   so it must go out chunked, not with a Content-Length.
+    # * proxy_read_timeout 1h — the stream is idle between events by design; a
+    #   short read timeout would cut a healthy long-lived connection.
+    location ~ ^/api/v1/(application-runs|match-runs)/[^/]+/events$ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        gzip off;
+
+        chunked_transfer_encoding on;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 1h;
+        proxy_read_timeout 1h;
+    }
+
+    # ── Static bundle ─────────────────────────────────────────────────────────
+    # Vite emits content-hashed filenames under /assets, so those are immutable.
+    #
+    # Every location that declares an ``add_header`` repeats the security-header
+    # include. Nginx replaces the whole inherited set as soon as a nested block
+    # declares one header of its own, so a block that only wanted to add
+    # ``Cache-Control`` would otherwise silently drop nosniff and the CSP. The
+    # probe asserts these headers on /, /index.html and /assets/* precisely
+    # because this mistake is invisible in the config file.
+    location /assets/ {
+        access_log off;
+        # ``expires`` was deliberately not used here: it emits its own
+        # ``Cache-Control: max-age=...``, and combining it with the
+        # ``add_header`` below yields two conflicting Cache-Control headers whose
+        # precedence is undefined. A single explicit directive is both sufficient
+        # and unambiguous — and ``immutable`` is the part that actually matters,
+        # since it stops a revalidation request for content-hashed filenames.
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        include /etc/nginx/snippets/security-headers.conf;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+    }
+
+    # Client-side routing: the SPA owns every non-file path, so an unknown path
+    # renders the app shell instead of a 404. Real files are still served as-is.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Nginx ships sample assets that would otherwise be reachable and disclose
+    # the server identity.
+    location = /50x.html {
+        internal;
+    }
+}
