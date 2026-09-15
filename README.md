@@ -61,7 +61,7 @@ flowchart TB
 | 后端 | Python 3.12 + FastAPI + Pydantic v2 + SQLAlchemy 2 / Alembic |
 | 数据库 | PostgreSQL 17 + pgvector（1024 维向量） |
 | 任务 | Redis 7 + Celery |
-| Agent | 基于 Checkpoint 的节点引擎（IMP-018）；真实 LangGraph + PG Checkpointer 为后续适配项 |
+| Agent | 基于 Checkpoint 的节点引擎（IMP-018）；采用自研 `RunEngine` 而非 LangGraph，理由见 [ADR-0001](docs/adr/0001-agent-runtime-custom-engine-over-langgraph.md) |
 | 模型 | `qwen3.7-plus` + `qwen3.7-text-embedding`（OpenAI 兼容 / 百炼 SDK），默认 `MOCK_MODEL_MODE=true` |
 | 部署 | Docker Compose + Nginx；GitHub Actions CI（普通 CI 用 FakeModel） |
 
