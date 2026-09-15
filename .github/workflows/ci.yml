@@ -13,27 +13,78 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Ordinary CI is model-free by construction. FakeModel keeps the suite
+  # deterministic and means no provider credential ever has to be present; the
+  # real adapter is exercised by the explicitly-invoked diagnostics instead.
+  MOCK_MODEL_MODE: "true"
+
 jobs:
-  verify:
+  # ── Fast static gates ──────────────────────────────────────────────────────
+  # These do not need Docker at all, so they run in parallel with the heavier
+  # stack job and fail the PR in about a minute rather than after a full build.
+  static:
+    name: Static gates (docs, structure, TOML/JSON)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+      - name: Validate the document set
+        shell: pwsh
+        run: ./tests/validate_documents.ps1
+      - name: Validate the repository structure
+        shell: pwsh
+        run: ./tests/validate_project_structure.ps1
+
+  # ── The full local gate ────────────────────────────────────────────────────
+  # One job runs the same entry point a developer runs, so "green in CI" and
+  # "green locally" cannot diverge. project.ps1 verify already sequences:
+  #   * static probes (structure, PowerShell parse, env, compose, migrations,
+  #     idempotency, document pipeline, maintenance, evaluations, model adapter,
+  #     worker, auth, document upload, application entry, non-seed flow)
+  #   * Ruff, mypy, pytest (unit + PG/Redis integration inside the dev image)
+  #   * the offline evaluation gate (FIN-007)
+  #   * frontend typecheck, vitest, production build
+  #   * Playwright browser runs, including the FIN-010 non-seed flow and the
+  #     FIN-011 failure/safety matrix
+  #   * the FIN-012 Nginx proxy probe and the one-command-up probe
+  verify:
+    name: Reproducible project gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
-      - name: Verify Docker Compose
+
+      - name: Report the Docker Compose version
         run: docker compose version
+
       - name: Install Chromium for browser tests
         run: |
           npm --prefix apps/web ci
           npm --prefix apps/web exec -- playwright install --with-deps chromium
+
       - name: Run the reproducible project gate
         shell: pwsh
-        env:
-          MOCK_MODEL_MODE: "true"
         run: ./scripts/project.ps1 verify
+
+      - name: Upload probe logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          # The probes write their logs to the workspace root and to ci_logs/;
+          # they exist only on a failing run, which is exactly when they matter.
+          path: |
+            ci_logs/**
+            *.log
+          if-no-files-found: ignore
+          retention-days: 7
