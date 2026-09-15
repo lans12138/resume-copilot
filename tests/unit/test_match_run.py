@@ -106,8 +106,11 @@ class _RecordingNotifier:
 
 
 class _NoOpSubscription:
-    async def wait(self, timeout: float) -> None:
-        return None
+    async def wait(self, timeout: float) -> bool:
+        # Never wakes: it always lets the deadline elapse, which the SSE loop
+        # turns into a heartbeat.
+        await asyncio.sleep(timeout)
+        return False
 
     async def aclose(self) -> None:
         return None

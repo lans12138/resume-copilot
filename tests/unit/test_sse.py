@@ -572,3 +572,67 @@ def test_sql_repo_refresh_for_poll_releases_snapshot_in_place() -> None:
 
     asyncio.run(repo.aclose())
     assert sessions[0].closed is True  # released only when the stream ends
+
+
+# --------------------------------------------------------------------------- #
+def test_subscription_wait_reports_timeout_as_false() -> None:
+    """The keep-alive contract: ``wait`` must *report* a timeout, not raise.
+
+    The SSE loop emits its ``:`` heartbeat only on the ``not False`` branch, so
+    a notifier whose ``wait`` swallows the deadline internally (returning
+    ``None`` on both wake-up and timeout) leaves the loop unable to tell the two
+    apart and the heartbeat is silently never sent.
+
+    That is not hypothetical: ``_RedisSubscription.wait`` awaited
+    ``get_message(timeout=...)`` inside ``asyncio.wait_for``, and redis.asyncio
+    returns ``None`` on that timeout rather than raising, so the loop's
+    ``except TimeoutError`` never fired. The observable symptom was a live run
+    whose SSE stream produced its replay batch and then nothing for as long as
+    the connection stayed open — no heartbeat, and only a reconnect to discover
+    new events.
+    """
+    notifier = InMemoryEventNotifier()
+    run_id = uuid4()
+    subscription = notifier.subscribe(run_id)
+
+    # Nothing published: the deadline elapses and must be reported as a timeout.
+    assert asyncio.run(subscription.wait(0.02)) is False
+
+    # A publish that arrives after subscribe wakes the wait and must be reported
+    # as a wake-up, so the loop re-reads PostgreSQL instead of heartbeating.
+    async def publish_then_wait() -> bool:
+        await notifier.publish(run_id, 1)
+        return await subscription.wait(0.5)
+
+    assert asyncio.run(publish_then_wait()) is True
+    asyncio.run(subscription.aclose())
+
+
+def test_heartbeat_is_emitted_while_a_run_stays_non_terminal() -> None:
+    """An idle non-terminal run must keep the connection alive with heartbeats.
+
+    This is the regression guard for the defect above. The stream is drained for
+    several heartbeat periods while the run stays RUNNING and nothing is
+    published; the contract is that ``:`` frames keep arriving, because they are
+    the only evidence an intermediary is forwarding the body incrementally
+    rather than buffering it.
+    """
+    asyncio.run(_heartbeats_while_running())
+
+
+async def _heartbeats_while_running() -> None:
+    notifier = InMemoryEventNotifier()
+    agent_repo = InMemoryAgentRunRepository()
+    run_service = _application_run_service(agent_repo, notifier)
+    svc, _state = _sse_service(agent_repo, notifier)
+
+    run, _job_id = await _create_run(run_service)
+    await run_service.emit_status(run, status=RunStatus.RUNNING, message_key="r.1")
+
+    # Several heartbeat periods, so more than one frame is required rather than
+    # a single boundary case.
+    text = await _drain(svc.stream(_actor(), run.id, -1), timeout=HEARTBEAT * 3.5)
+
+    # heartbeat frames are bare ":" blocks; the replay batch has none.
+    heartbeats = [block for block in text.split("\n\n") if block.strip() == ":"]
+    assert len(heartbeats) >= 2, text

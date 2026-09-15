@@ -43,8 +43,16 @@ class EventNotifier(Protocol):
 class Subscription(Protocol):
     """Awaitable handle bound to one SSE connection."""
 
-    async def wait(self, timeout: float) -> None:
-        """Block until a publish arrives or ``timeout`` seconds elapse."""
+    async def wait(self, timeout: float) -> bool:
+        """Block until a publish arrives or ``timeout`` seconds elapse.
+
+        Returns ``True`` when a publish woke the wait and ``False`` on timeout.
+        The distinction is the contract the SSE loop's keep-alive depends on: a
+        caller can only emit a heartbeat when it can tell the wait ended by
+        timeout rather than by a wake-up. Implementations must not signal the
+        timeout by raising, because the loop's ``except TimeoutError`` sits
+        outside a call that may already have swallowed it.
+        """
         ...
 
     async def aclose(self) -> None:
@@ -63,11 +71,12 @@ class NoOpEventNotifier:
 
 
 class _NoOpSubscription:
-    async def wait(self, timeout: float) -> None:
+    async def wait(self, timeout: float) -> bool:
         try:
             await asyncio.sleep(timeout)
         except asyncio.CancelledError:
-            return None
+            return False
+        return False
 
     async def aclose(self) -> None:
         return None
@@ -103,18 +112,19 @@ class _InMemorySubscription:
         self._run_id = run_id
         self._seen = owner._latest.get(run_id, -1)
 
-    async def wait(self, timeout: float) -> None:
+    async def wait(self, timeout: float) -> bool:
         # A publish that arrived after subscribe (or after the last wait) is already
         # reflected in _latest, so wake immediately instead of blocking.
         if self._owner._latest.get(self._run_id, -1) > self._seen:
-            return None
+            return True
         loop = asyncio.get_event_loop()
         future: asyncio.Future[None] = loop.create_future()
         self._owner._waiters.setdefault(self._run_id, []).append(future)
         try:
             await asyncio.wait_for(future, timeout)
+            return True
         except TimeoutError:
-            pass
+            return False
         finally:
             self._seen = self._owner._latest.get(self._run_id, -1)
 
@@ -144,7 +154,7 @@ class _RedisSubscription:
         self._pubsub = redis.pubsub()
         self._ready = False
 
-    async def wait(self, timeout: float) -> None:
+    async def wait(self, timeout: float) -> bool:
         if not self._ready:
             await self._pubsub.subscribe(self._channel)
             self._ready = True
@@ -161,19 +171,27 @@ class _RedisSubscription:
         # argument and block until a message (it interrupts them at `timeout`). Either
         # way the loop re-reads PostgreSQL at most once per `timeout`, and wakes
         # immediately when the worker's publish arrives.
+        #
+        # A ``None`` result *is* the timeout signal: the SSE loop turns it into the
+        # keep-alive heartbeat that holds the connection open through intermediaries.
+        # This is returned rather than raised because the loop must distinguish
+        # "deadline elapsed" from "woke up on a publish", and an exception cannot
+        # carry that distinction here — the redis client may have already converted
+        # the timeout into a ``None``.
         try:
-            await asyncio.wait_for(
+            message = await asyncio.wait_for(
                 self._pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout),
                 timeout,
             )
         except TimeoutError:
-            return
+            return False
         except Exception:
             # A broken Pub/Sub read (e.g. a cancelled socket read) must not abort the
             # stream: the SSE loop re-reads PostgreSQL and still discovers the terminal
             # state (§13.2). A genuine external cancellation propagates as
             # CancelledError and is intentionally not swallowed.
-            return
+            return False
+        return message is not None
 
     async def aclose(self) -> None:
         try:

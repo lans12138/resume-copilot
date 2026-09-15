@@ -114,9 +114,13 @@ class SseService:
 
                 # Wait for a notify wake-up or the heartbeat deadline. A lost
                 # notify is harmless: the next heartbeat re-reads PostgreSQL.
-                try:
-                    await subscription.wait(self._heartbeat)
-                except TimeoutError:
+                #
+                # ``wait`` reports *which* of the two happened rather than raising,
+                # because the keep-alive frame is the observable proof that the
+                # stream is being forwarded incrementally (a buffering proxy would
+                # hold it) and therefore has to be emitted on every deadline.
+                woke = await subscription.wait(self._heartbeat)
+                if not woke:
                     yield format_heartbeat()
         finally:
             await subscription.aclose()
