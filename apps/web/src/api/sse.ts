@@ -115,7 +115,10 @@ export function connectRunEvents(
   const basePath = opts.basePath ?? "/api/v1"
   const doFetch = opts.fetchImpl ?? fetch
   const maxBackoff = opts.maxBackoffMs ?? 30_000
-  const controller = new AbortController()
+  // One controller per attempt. A gap aborts *this* stream and immediately opens
+  // a replacement, so a single shared controller (aborted once) would poison
+  // every later attempt and make the reconnect a no-op.
+  let controller = new AbortController()
   let lastAccepted = -1
   let closed = false
   let attempt = 0
@@ -126,6 +129,22 @@ export function connectRunEvents(
     closed = true
     controller.abort()
     opts.onClosed?.(reason)
+  }
+
+  /**
+   * Abandon the current stream without ending the session: the caller is about
+   * to open a replacement. Distinct from `stop`, which is terminal for the
+   * connection (and therefore for any scheduled reconnect).
+   */
+  function abandonStream() {
+    controller.abort()
+    controller = new AbortController()
+    buffer = ""
+  }
+
+  function resetForReconnect() {
+    controller = new AbortController()
+    buffer = ""
   }
 
   function pathFor(): string {
@@ -194,7 +213,10 @@ export function connectRunEvents(
           if (verdict === "duplicate") continue
           if (verdict === "gap") {
             opts.onError?.({ kind: "gap", message: "事件跳号，重新连接" })
-            stop("client")
+            // Drop this stream and reopen from the last accepted sequence. The
+            // session stays open: a gap is recoverable, unlike a terminal status
+            // or a revocation.
+            abandonStream()
             reconnectFrom(lastAccepted)
             return
           }
@@ -217,6 +239,11 @@ export function connectRunEvents(
     attempt += 1
     const base = Math.min(1000 * 2 ** (attempt - 1), maxBackoff)
     const delay = Math.min(maxBackoff, base + Math.random() * 300)
+    // Refresh the controller so the next attempt starts with a live signal. The
+    // previous body ended on its own, so this is not strictly required today,
+    // but it keeps the invariant "controller is live whenever open() runs"
+    // true by construction rather than by accident.
+    resetForReconnect()
     setTimeout(() => {
       if (!closed) void open()
     }, delay)
