@@ -1,0 +1,221 @@
+name: resume-copilot
+
+x-backend-build: &backend-build
+  context: .
+  dockerfile: deploy/docker/backend.Dockerfile
+  target: runtime
+
+x-backend-environment: &backend-environment
+  APP_ENV: ${APP_ENV:-local}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the local .env file}
+  DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the local .env file}
+  REDIS_URL: ${REDIS_URL:?Set REDIS_URL in the local .env file}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL in the local .env file}
+  CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-}
+  STORAGE_ROOT: /data/resumes
+  MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-10}
+  MAX_BATCH_FILES: ${MAX_BATCH_FILES:-20}
+  PARSER_VERSION: ${PARSER_VERSION:-v1}
+  MOCK_MODEL_MODE: ${MOCK_MODEL_MODE:-true}
+
+services:
+  api:
+    image: resume-copilot-api:local
+    build: *backend-build
+    restart: unless-stopped
+    environment: *backend-environment
+    volumes:
+      - resume_storage:/data/resumes
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=2).read()
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: pgvector/pgvector:pg17@sha256:cf134a767f474095eeba57e0117be8e568e011a63f33fbf252f14c9b760f8e6f
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-resume_copilot}
+      POSTGRES_USER: ${POSTGRES_USER:-resume_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the local .env file}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    shm_size: 256mb
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - "60"
+      - "1"
+      - --loglevel
+      - warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  storage-init:
+    image: python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+    profiles:
+      - tools
+    restart: "no"
+    network_mode: none
+    command:
+      - sh
+      - -ec
+      - umask 027; mkdir -p /data/resumes /data/test-artifacts; chmod 0750 /data/resumes /data/test-artifacts
+    volumes:
+      - resume_storage:/data/resumes
+      - test_artifacts:/data/test-artifacts
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    image: resume-copilot-api:local
+    build: *backend-build
+    profiles:
+      - tools
+    restart: "no"
+    environment: *backend-environment
+    command:
+      - alembic
+      - upgrade
+      - head
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  seed:
+    image: resume-copilot-api:local
+    build: *backend-build
+    profiles:
+      - tools
+    restart: "no"
+    environment: *backend-environment
+    volumes:
+      # The runtime image does not bundle scripts/; mount it read-only so the
+      # seeder can import the backend package and run against the live database.
+      - ./scripts:/workspace/scripts:ro
+    command:
+      - python
+      - scripts/seed_demo_data.py
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
+  worker:
+    image: resume-copilot-api:local
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - backend.worker
+    environment: *backend-environment
+    volumes:
+      - resume_storage:/data/resumes
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No Docker healthcheck: celery inspect ping is unreliable as a container
+    # health gate. Readiness is asserted functionally by tests/validate_worker.ps1,
+    # which polls the worker log for "ready"/"Connected to redis" before enqueuing.
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+  scheduler:
+    image: resume-copilot-api:local
+    build: *backend-build
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - backend.scheduler
+    environment: *backend-environment
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    # No Docker healthcheck: a `celery beat --help` probe is unreliable as a
+    # container health gate (it can report unhealthy while beat is actually
+    # fine), and `up --wait` then aborts the whole command. Readiness is
+    # asserted functionally by tests/validate_worker.ps1, which polls the
+    # scheduler log for "Sending due task maintenance.expire_approvals" within
+    # the beat interval.
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  resume_storage:
+  test_artifacts:

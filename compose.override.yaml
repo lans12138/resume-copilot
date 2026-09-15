@@ -1,0 +1,24 @@
+services:
+  api:
+    ports:
+      - name: api-debug
+        target: 8000
+        published: "${API_HOST_PORT:-8000}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+
+  postgres:
+    ports:
+      - name: postgres-debug
+        target: 5432
+        published: "${POSTGRES_HOST_PORT:-5433}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+
+  redis:
+    ports:
+      - name: redis-debug
+        target: 6379
+        published: "${REDIS_HOST_PORT:-6380}"
+        host_ip: 127.0.0.1
+        protocol: tcp
