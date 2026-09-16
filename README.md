@@ -77,22 +77,19 @@ flowchart TB
 | 入口 | Nginx 1.29.3-alpine（由 `web` 服务的运行时阶段提供，无独立 nginx 服务） |
 | 编排 | Docker Compose + GitHub Actions（普通 CI 全程 FakeModel，无外部凭据） |
 
-## 快速开始（全新环境一键演示）
+## 快速开始
 
 前置只需要 **Docker Desktop（含 Compose v2）**。Node 22 不是演示必需的——前端在镜像内由固定 Node 版本构建。
 
 ```bash
-# 1) 配置环境变量：把占位 secret 换成真值
-cp .env.example .env
-#   JWT_SECRET 改 ≥48 位随机串，POSTGRES_PASSWORD / DATABASE_URL 里的密码保持一致
-#   （QWEN_API_KEY、LANGFUSE_* 保持占位符即可：Mock 模式不读模型端点，Langfuse 默认关闭）
-
-# 2) 一条命令：构建 → 迁移 → seed → 入口健康检查 → 浏览器登录 smoke
-pwsh scripts/start_stack.ps1 -KeepRunning
+# 日常启动：首次自动生成 .env，构建、迁移、seed、健康检查后保持运行
+pwsh ./start.ps1
 #   入口：http://localhost:8080
 ```
 
-`start_stack.ps1` 会先检查是否残留同项目 Docker 资源（残留卷会让「全新」名不副实）、拒绝仍带**阻塞级**占位符（`JWT_SECRET` / `POSTGRES_PASSWORD` / `DATABASE_URL`）的 `.env`、把 seed 连跑两次以验证幂等、并**默认在结束前连卷一起拆掉**；要保留运行中的栈就加 `-KeepRunning`。也可以直接 `pwsh scripts/project.ps1 env-init` 生成 `.env`，它会随机化 JWT 与数据库密码。
+`start.ps1` 默认保留已有容器卷和业务数据，重复运行是安全的；可选参数：`-OpenBrowser` 启动后打开页面，`-ResetDemo` 仅重置合成演示数据，`-Fresh` 明确删除本项目 Docker 卷并创建全新演示环境。`-Fresh` 与 `-ResetDemo` 不能同时使用。
+
+底层的 `scripts/start_stack.ps1` 是全新环境验证脚本：它拒绝复用残留资源、把 seed 连跑两次验证幂等，并默认在验证后连卷拆除；需要直接使用时加 `-KeepRunning` 才会保留栈。
 
 手工等价步骤：
 

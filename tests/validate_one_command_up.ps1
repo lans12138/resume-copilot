@@ -28,8 +28,43 @@ $composeFile = Join-Path $repoRoot 'compose.yaml'
 $composeOverride = Join-Path $repoRoot 'compose.override.yaml'
 $projectName = 'resume-copilot-fin012-onecommand-probe'
 $entryPort = 18081
+$apiPort = 18082
+$postgresPort = 18083
+$redisPort = 18084
 $envFile = Join-Path $repoRoot '.env.example'
 $probeEnvFile = Join-Path $repoRoot '.env'
+
+# The root launcher is the operator-facing daily path. Keep its safe defaults
+# under a static contract here; the live probe below exercises the fresh-start
+# implementation that it delegates to.
+$dailyLauncher = Join-Path $repoRoot 'start.ps1'
+$launcherTokens = $null
+$launcherErrors = $null
+$launcherText = [System.IO.File]::ReadAllText($dailyLauncher, [System.Text.Encoding]::UTF8)
+[void][System.Management.Automation.Language.Parser]::ParseInput(
+    $launcherText,
+    [ref] $launcherTokens,
+    [ref] $launcherErrors
+)
+if ($launcherErrors.Count -gt 0) {
+    $details = $launcherErrors | ForEach-Object {
+        "line $($_.Extent.StartLineNumber): $($_.Message)"
+    }
+    throw "start.ps1 has PowerShell parse errors:`n$($details -join "`n")"
+}
+$launcherContracts = @{
+    'creates the local environment on first use' = 'scripts/initialize_local_env\.ps1'
+    'delegates clean starts to the verified launcher' = 'scripts/start_stack\.ps1'
+    'requires an explicit fresh switch before volume deletion' = 'if \(\$Fresh\)[\s\S]+?--volumes'
+    'supports an explicit demo-data reset' = '\$ResetDemo[\s\S]+?--reset'
+    'checks API readiness through the public entry' = '/api/v1/health/ready'
+    'reports a stable ready marker' = 'DEMO_READY'
+}
+foreach ($contract in $launcherContracts.GetEnumerator()) {
+    if ($launcherText -notmatch $contract.Value) {
+        throw "start.ps1 no longer $($contract.Key)."
+    }
+}
 
 function Invoke-Docker {
     param([Parameter(Mandatory)][string[]] $Arguments)
@@ -83,6 +118,12 @@ $existingEnv = $null
 if (Test-Path -LiteralPath $probeEnvFile -PathType Leaf) {
     $existingEnv = Get-Content -LiteralPath $probeEnvFile -Raw
 }
+$previousApiPort = $env:API_HOST_PORT
+$previousPostgresPort = $env:POSTGRES_HOST_PORT
+$previousRedisPort = $env:REDIS_HOST_PORT
+$env:API_HOST_PORT = "$apiPort"
+$env:POSTGRES_HOST_PORT = "$postgresPort"
+$env:REDIS_HOST_PORT = "$redisPort"
 # A deterministic, obviously synthetic secret; not used anywhere but this probe.
 $syntheticSecret = ('probe' + ('0' * 44))
 $probeEnvText = (Get-Content -LiteralPath $envFile -Raw) `
@@ -199,6 +240,19 @@ finally {
     }
     else {
         Remove-Item -LiteralPath $probeEnvFile -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($portVariable in @(
+        @{ Name = 'API_HOST_PORT'; Previous = $previousApiPort },
+        @{ Name = 'POSTGRES_HOST_PORT'; Previous = $previousPostgresPort },
+        @{ Name = 'REDIS_HOST_PORT'; Previous = $previousRedisPort }
+    )) {
+        if ($null -eq $portVariable.Previous) {
+            Remove-Item "Env:$($portVariable.Name)" -ErrorAction SilentlyContinue
+        }
+        else {
+            Set-Item "Env:$($portVariable.Name)" $portVariable.Previous
+        }
     }
 }
 
