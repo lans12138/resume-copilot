@@ -21,6 +21,33 @@ Two properties are asserted that only a real database can settle:
 
 Each ``def test_`` drives its async scenario through ``asyncio.run`` (the project's
 hermetic convention: no pytest-asyncio plugin is configured).
+
+Two things this suite has to do that a single-table suite does not.
+
+**Seed the FK parents.** These tables are not islands: ``job_applications``
+points at ``jobs`` and ``candidates``, ``jobs`` points at ``users``, and
+``resume_documents.uploaded_by`` points at ``users``. All of those constraints
+are real and non-deferrable, so a random ``uuid4()`` in a parent column is a
+foreign-key violation, not a harmless stub.
+
+**Never let two ends of a cycle be pending in one flush.** ``job_applications``
+carries a composite foreign key to ``application_runs`` declared with
+``use_alter=True`` -- that is what lets the two tables be created at all, since
+``application_runs`` points back at ``job_applications``. SQLAlchemy therefore
+sees a cycle between the two mappers and breaks it in an order that satisfies one
+side and violates the other: put both in a single flush and it emits
+``application_runs`` before ``job_applications``, which trips
+``fk_application_runs_application``. ``Approval`` makes it worse by having no
+``relationship()`` to ``ApplicationRun`` at all -- only a bare foreign key -- so
+it carries no dependency and lands wherever the sort puts it.
+
+Production code never hits this because it writes these rows in separate
+transactions (the application is created and committed long before a run claims
+it). This suite mirrors that: one flush per level of the graph.
+
+The model registry is imported for its side effect: without it only the modules
+this file names are on ``Base.metadata``, and every foreign key pointing at a
+table nobody imported fails to resolve.
 """
 
 from __future__ import annotations
@@ -34,12 +61,18 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+# Side-effect import: registers every mapped table on Base.metadata, so the
+# foreign keys these seeds depend on resolve.
+import backend.app.infrastructure.model_registry  # noqa: F401
 from backend.app.agent.models import AgentCheckpoint, AgentRun, RunStatus, RunType
 from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.approvals.models import Approval, ApprovalStatus
 from backend.app.approvals.repository import SqlApprovalRepository
+from backend.app.auth.models import User, UserRole
+from backend.app.candidates.models import Candidate
 from backend.app.documents.models import DocumentStatus, ResumeDocument
 from backend.app.job_applications.models import ApplicationRun, ApplicationStatus, JobApplication
+from backend.app.jobs.models import Job, JobStatus
 from backend.app.maintenance.repository import (
     SqlApplicationRunRecoveryProbe,
     SqlMaintenanceDocumentRepository,
@@ -64,14 +97,54 @@ async def _clear(engine: object) -> None:
     """Remove the rows this suite creates, respecting FK order."""
     async with engine.begin() as conn:  # type: ignore[attr-defined]
         await conn.execute(text("DELETE FROM approvals"))
+        await conn.execute(text("DELETE FROM application_status_history"))
         await conn.execute(text("DELETE FROM application_runs"))
         await conn.execute(text("DELETE FROM job_applications"))
+        await conn.execute(text("DELETE FROM agent_checkpoints"))
         await conn.execute(text("DELETE FROM agent_runs"))
         await conn.execute(text("DELETE FROM resume_documents"))
+        await conn.execute(text("DELETE FROM candidates"))
+        await conn.execute(text("DELETE FROM jobs"))
+        await conn.execute(text("DELETE FROM users"))
+
+
+async def _seed_context(session: AsyncSession) -> tuple[UUID, UUID]:
+    """Insert the FK parents the whole test shares; return (user_id, job_id).
+
+    One user serves twice: as the creator of the job and as the uploader of the
+    resume documents, which is what the two ``users`` foreign keys ask for.
+    Candidates are *not* shared -- ``uq_job_applications_job_candidate`` allows
+    one application per (job, candidate), so every application gets its own.
+    """
+    user_id = uuid4()
+    session.add(
+        User(
+            id=user_id,
+            username=f"hr-{user_id.hex[:12]}",
+            password_hash="not-a-real-hash",
+            role=UserRole.HR,
+            is_active=True,
+        )
+    )
+    job_id = uuid4()
+    session.add(
+        Job(
+            id=job_id,
+            title=f"Role {job_id.hex[:8]}",
+            status=JobStatus.DRAFT,
+            created_by=user_id,
+        )
+    )
+    await session.flush()
+    return user_id, job_id
 
 
 async def _seed_document(
-    session: AsyncSession, *, status: DocumentStatus, updated_at: datetime
+    session: AsyncSession,
+    *,
+    status: DocumentStatus,
+    updated_at: datetime,
+    uploaded_by: UUID,
 ) -> UUID:
     document = ResumeDocument(
         id=uuid4(),
@@ -82,7 +155,7 @@ async def _seed_document(
         content_sha256=uuid4().hex + uuid4().hex,
         status=status,
         attempt=0,
-        uploaded_by=uuid4(),
+        uploaded_by=uploaded_by,
         updated_at=updated_at,
     )
     session.add(document)
@@ -95,11 +168,14 @@ async def _seed_pending_approval(
     *,
     expires_at: datetime,
     index: int,
+    job_id: UUID,
     approval_id: UUID | None = None,
 ) -> UUID:
     """Insert a run + application + PENDING approval, returning the approval id."""
     run_id = uuid4()
     application_id = uuid4()
+    candidate_id = uuid4()
+    session.add(Candidate(id=candidate_id, display_name=f"Candidate {candidate_id.hex[:8]}"))
     session.add(
         AgentRun(
             id=run_id,
@@ -113,13 +189,16 @@ async def _seed_pending_approval(
     session.add(
         JobApplication(
             id=application_id,
-            job_id=uuid4(),
-            candidate_id=uuid4(),
+            job_id=job_id,
+            candidate_id=candidate_id,
             status=ApplicationStatus.CREATED,
             version=1,
         )
     )
+    # See the module docstring: one level of the graph per flush.
+    await session.flush()
     session.add(ApplicationRun(run_id=run_id, application_id=application_id))
+    await session.flush()
     approval_id = approval_id or uuid4()
     session.add(
         Approval(
@@ -148,9 +227,13 @@ def test_claim_expired_pending_is_ordered_and_skips_locked_rows() -> None:
         try:
             await _clear(engine)
             async with factory() as session:
+                _, job_id = await _seed_context(session)
                 for index in range(6):
                     await _seed_pending_approval(
-                        session, expires_at=NOW - timedelta(minutes=5), index=index
+                        session,
+                        expires_at=NOW - timedelta(minutes=5),
+                        index=index,
+                        job_id=job_id,
                     )
                 await session.commit()
 
@@ -192,11 +275,18 @@ def test_claim_expired_pending_ignores_rows_that_are_not_expired() -> None:
         try:
             await _clear(engine)
             async with factory() as session:
+                _, job_id = await _seed_context(session)
                 expired_id = await _seed_pending_approval(
-                    session, expires_at=NOW - timedelta(minutes=1), index=0
+                    session,
+                    expires_at=NOW - timedelta(minutes=1),
+                    index=0,
+                    job_id=job_id,
                 )
                 await _seed_pending_approval(
-                    session, expires_at=NOW + timedelta(hours=1), index=1
+                    session,
+                    expires_at=NOW + timedelta(hours=1),
+                    index=1,
+                    job_id=job_id,
                 )
                 await session.commit()
 
@@ -219,17 +309,30 @@ def test_stranded_document_scan_filters_by_status_and_age() -> None:
         try:
             await _clear(engine)
             async with factory() as session:
+                user_id, _ = await _seed_context(session)
                 stranded = await _seed_document(
-                    session, status=DocumentStatus.QUEUED, updated_at=NOW - timedelta(hours=1)
+                    session,
+                    status=DocumentStatus.QUEUED,
+                    updated_at=NOW - timedelta(hours=1),
+                    uploaded_by=user_id,
                 )
                 await _seed_document(
-                    session, status=DocumentStatus.QUEUED, updated_at=NOW
+                    session,
+                    status=DocumentStatus.QUEUED,
+                    updated_at=NOW,
+                    uploaded_by=user_id,
                 )
                 await _seed_document(
-                    session, status=DocumentStatus.READY, updated_at=NOW - timedelta(hours=1)
+                    session,
+                    status=DocumentStatus.READY,
+                    updated_at=NOW - timedelta(hours=1),
+                    uploaded_by=user_id,
                 )
                 await _seed_document(
-                    session, status=DocumentStatus.PARSING, updated_at=NOW - timedelta(hours=1)
+                    session,
+                    status=DocumentStatus.PARSING,
+                    updated_at=NOW - timedelta(hours=1),
+                    uploaded_by=user_id,
                 )
                 await session.commit()
 
@@ -253,8 +356,12 @@ def test_storage_key_reference_check_reflects_committed_rows() -> None:
         try:
             await _clear(engine)
             async with factory() as session:
+                user_id, _ = await _seed_context(session)
                 document_id = await _seed_document(
-                    session, status=DocumentStatus.READY, updated_at=NOW
+                    session,
+                    status=DocumentStatus.READY,
+                    updated_at=NOW,
+                    uploaded_by=user_id,
                 )
                 document = await session.get(ResumeDocument, document_id)
                 assert document is not None
@@ -292,6 +399,12 @@ def test_recovery_probe_reads_checkpoint_and_executed_approval() -> None:
             thread_id = f"thread-{run_id.hex}"
             decider = uuid4()
             async with factory() as session:
+                _, job_id = await _seed_context(session)
+                application_id = uuid4()
+                candidate_id = uuid4()
+                session.add(
+                    Candidate(id=candidate_id, display_name=f"Candidate {candidate_id.hex[:8]}")
+                )
                 session.add(
                     AgentRun(
                         id=run_id,
@@ -302,17 +415,19 @@ def test_recovery_probe_reads_checkpoint_and_executed_approval() -> None:
                         config_snapshot_json={},
                     )
                 )
-                application_id = uuid4()
                 session.add(
                     JobApplication(
                         id=application_id,
-                        job_id=uuid4(),
-                        candidate_id=uuid4(),
+                        job_id=job_id,
+                        candidate_id=candidate_id,
                         status=ApplicationStatus.CREATED,
                         version=1,
                     )
                 )
+                await session.flush()
                 session.add(ApplicationRun(run_id=run_id, application_id=application_id))
+                # Parents first, for the reason the module docstring gives.
+                await session.flush()
                 session.add(
                     Approval(
                         id=uuid4(),
