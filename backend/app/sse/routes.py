@@ -14,7 +14,6 @@ the connection with an ``SSE_AUTH_REVOKED`` frame rather than leaking events.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import Annotated
 from uuid import UUID
 
@@ -31,30 +30,41 @@ from backend.app.sse.service import SseService
 router = APIRouter(prefix="/api/v1", tags=["sse"])
 
 
-async def sse_service(request: Request) -> AsyncGenerator[SseService, None]:
-    """Build the SSE service per request from process resources (yield = DI scope)."""
+async def sse_service(request: Request) -> SseService:
+    """Build the SSE service per request from process resources.
+
+    Deliberately *not* a ``yield`` dependency and deliberately not scoped to a
+    request session: an SSE stream outlives every ordinary request, and a session
+    opened here is only closed when the response finishes — i.e. when the run ends
+    or the browser goes away. That pinned one pooled connection for the whole life
+    of every live stream, on top of the one the repository holds, so eight
+    concurrent streams exhausted the 5+10 pool and every request in the process
+    (login included) then answered 500 after ``DB_POOL_TIMEOUT`` (CI run
+    35052716044). Both dependencies below own short-lived sessions instead.
+    """
     resources: RuntimeResources = request.app.state.resources
     settings = request.app.state.settings
-    async with resources.session_factory() as session:
-        # Pass the factory, not a single session: the repository keeps one session for
-        # the whole stream and releases its frozen READ COMMITTED snapshot (rollback +
-        # expire_all) on every poll, so each replay read sees the worker's latest commit
-        # without churning the connection pool (§13.2). The JobService session here is only
-        # used for the stable job-access authorization check, so its snapshot does not matter.
-        agent_repo = SqlAgentRunRepository(session_factory=resources.session_factory)
-        job_service = JobService(session)
+    # Pass the factory, not a single session: the repository keeps one session for
+    # the whole stream and releases its frozen READ COMMITTED snapshot (rollback +
+    # expire_all) on every poll, so each replay read sees the worker's latest commit
+    # without holding the connection across the idle wait (§13.2).
+    agent_repo = SqlAgentRunRepository(session_factory=resources.session_factory)
 
-        async def authorize_job(actor: Actor, job_id: UUID) -> None:
-            await job_service.get_authorized(actor, job_id)
+    async def authorize_job(actor: Actor, job_id: UUID) -> None:
+        # One session per check, not one per stream: the job-access check runs on
+        # every replay batch, every live batch and every heartbeat (§13.4), so it is
+        # a short read that must not carry a connection into the idle window.
+        async with resources.session_factory() as session:
+            await JobService(session).get_authorized(actor, job_id)
 
-        yield SseService(
-            agent_repo,
-            authorize_job,
-            resources.event_notifier,
-            heartbeat_seconds=settings.sse_heartbeat_seconds,
-            batch_size=settings.sse_batch_size,
-            retry_milliseconds=settings.sse_retry_milliseconds,
-        )
+    return SseService(
+        agent_repo,
+        authorize_job,
+        resources.event_notifier,
+        heartbeat_seconds=settings.sse_heartbeat_seconds,
+        batch_size=settings.sse_batch_size,
+        retry_milliseconds=settings.sse_retry_milliseconds,
+    )
 
 
 ServiceDep = Annotated[SseService, Depends(sse_service)]
