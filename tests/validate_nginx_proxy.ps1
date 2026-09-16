@@ -4,6 +4,17 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Read container output as UTF-8 regardless of the host's console codepage.
+#
+# Docker and the containers emit UTF-8. A child pwsh inherits its console
+# encoding from its parent, which on a Chinese Windows host is cp936, so without
+# this the SPA shell comes back with mojibake ("<meta description>" turns into
+# garbage) and any assertion touching a non-ASCII string would fail locally while
+# passing on CI. ``[Console]::OutputEncoding`` covers what this process *reads*
+# from native commands; ``$OutputEncoding`` covers what it sends to them.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # FIN-012 item 2: the public entry point is Nginx, not the API. Everything below
 # talks to Nginx over the published port and never to `api:8000` directly, so a
 # passing run means the proxy itself is transparent for the two things that
@@ -21,6 +32,15 @@ $envFile = Join-Path $repoRoot '.env.example'
 $projectName = 'resume-copilot-fin012-nginx-probe'
 $entryPort = 18080
 $testPassword = 'synthetic-password-123'
+# The two accounts this probe creates for itself. They are named once and used
+# everywhere below — the bootstrap step, the login, the psql lookup and the
+# identity assertion — because the earlier version hardcoded 'hr-demo' in the
+# login while bootstrapping 'hr-nginx-probe', and then asserted that the session
+# belonged to 'hr-nginx-probe'. The login could not succeed, and the seed account
+# it named does not even exist on this stack (the probe deliberately does not run
+# seed). One name, one source.
+$probeUsername = 'hr-nginx-probe'
+$viewerUsername = 'hm-nginx-probe'
 $previousWebPort = $env:WEB_HOST_PORT
 
 function Invoke-Docker {
@@ -164,26 +184,68 @@ data = response.read().decode('utf-8', 'replace')
 print('BODY:' + (data if data else '__EMPTY__'))
 "@
     $output = @(Invoke-ProbePython -Script $pythonProbe)
-    if ($output.Count -lt 9) {
-        throw "Entry request returned incomplete output: $($output -join ' | ')"
+
+    # Parse structurally, never by fixed offset.
+    #
+    # ``docker compose run`` prints its container lifecycle lines on *stderr*
+    # (" Container <name> Creating" / " Created"), and ``Invoke-Docker`` merges
+    # stderr into the captured output on purpose (see its comment about PS 5.1).
+    # Those two lines arrive ahead of the container's own stdout, so the output is
+    # shifted and the offsets are not stable. The previous version read
+    # ``$output[0]`` as the status and ``$output[1..7]`` as headers, which threw
+    # "Index was outside the bounds of the array" — the second lifecycle line has
+    # no colon, so ``$parts[1]`` did not exist — and would have misread the status
+    # and every header even if it had not.
+    #
+    # Anchor instead on the content: the status is the first bare 3-digit line, the
+    # headers are the ``name: value`` lines that follow it, and everything from the
+    # ``BODY:`` marker on is the body.
+    $statusIndex = -1
+    for ($i = 0; $i -lt $output.Count; $i++) {
+        if ($output[$i].Trim() -match '^\d{3}$') { $statusIndex = $i; break }
     }
+    if ($statusIndex -lt 0) {
+        throw "Entry request returned no HTTP status line:`n$($output -join "`n")"
+    }
+
     $headerMap = @{}
-    foreach ($line in $output[1..7]) {
-        $parts = $line -split ':', 2
-        $headerMap[$parts[0].Trim().ToLowerInvariant()] = $parts[1].Trim()
+    $bodyIndex = -1
+    for ($i = $statusIndex + 1; $i -lt $output.Count; $i++) {
+        if ($output[$i] -like 'BODY:*') { $bodyIndex = $i; break }
+        $match = [regex]::Match($output[$i], '^([A-Za-z0-9-]+):\s?(.*)$')
+        if ($match.Success) {
+            $headerMap[$match.Groups[1].Value.ToLowerInvariant()] = $match.Groups[2].Value.Trim()
+        }
     }
-    $bodyLine = ($output | Where-Object { $_ -like 'BODY:*' } | Select-Object -Last 1)
-    $rawBody = $bodyLine.Substring(5)
+    if ($bodyIndex -lt 0) {
+        throw "Entry request returned no BODY marker:`n$($output -join "`n")"
+    }
+
+    # The body is echoed verbatim, so it spans the rest of the output: a JSON
+    # document is one line, but the SPA shell is HTML and covers many. Reading only
+    # the last ``BODY:``-prefixed line truncated the shell to its first line, so
+    # the ``<div id="root">`` assertion downstream could not have passed.
+    $rawBody = (@($output[$bodyIndex..($output.Count - 1)]) -join "`n") -replace '^BODY:', ''
+
+    # ``Body`` is only meaningful when the response actually is JSON — the SPA
+    # shell is served as ``text/html``, and running ``ConvertFrom-Json`` on it
+    # would fail the probe at the very first request.
+    $jsonBody = $null
+    if ($rawBody -and $rawBody -ne '__EMPTY__' -and $headerMap['content-type'] -match 'json') {
+        $jsonBody = $rawBody | ConvertFrom-Json
+    }
+
     return [PSCustomObject]@{
-        Status = [int] $output[0].Trim()
+        Status = [int] $output[$statusIndex].Trim()
         Headers = $headerMap
-        Body = if ($rawBody -eq '__EMPTY__') { $null } else { $rawBody | ConvertFrom-Json }
+        Body = $jsonBody
         RawBody = $rawBody
     }
 }
 
 function Invoke-Login {
-    $body = "username=hr-demo&password=$([uri]::EscapeDataString($testPassword))"
+    param([string] $Username = $probeUsername)
+    $body = "username=$Username&password=$([uri]::EscapeDataString($testPassword))"
     return Invoke-EntryRequest `
         -Method 'POST' `
         -Path '/api/v1/auth/token' `
@@ -211,14 +273,14 @@ try {
     # actor whose access can be taken away.
     [void] (Invoke-Compose -Arguments @(
         'run', '--rm', '--no-deps',
-        '--env', 'BOOTSTRAP_USERNAME=hr-nginx-probe',
+        '--env', "BOOTSTRAP_USERNAME=$probeUsername",
         '--env', "BOOTSTRAP_PASSWORD=$testPassword",
         '--env', 'BOOTSTRAP_ROLE=HR',
         'api', 'python', '-m', 'backend.app.auth.bootstrap'
     ))
     [void] (Invoke-Compose -Arguments @(
         'run', '--rm', '--no-deps',
-        '--env', 'BOOTSTRAP_USERNAME=hm-nginx-probe',
+        '--env', "BOOTSTRAP_USERNAME=$viewerUsername",
         '--env', "BOOTSTRAP_PASSWORD=$testPassword",
         '--env', 'BOOTSTRAP_ROLE=HIRING_MANAGER',
         'api', 'python', '-m', 'backend.app.auth.bootstrap'
@@ -235,7 +297,7 @@ try {
             'exec', '--no-TTY', 'postgres',
             'psql', '-U', $dbUser, '-d', $dbName,
             '-v', 'ON_ERROR_STOP=1', '-tAc',
-            "SELECT id FROM users WHERE username = 'hm-nginx-probe';"
+            "SELECT id FROM users WHERE username = '$viewerUsername';"
         ) | Select-Object -Last 1
     ).Trim()
     if (-not $viewerId) {
@@ -304,7 +366,7 @@ try {
     $token = $login.Body.access_token
 
     $me = Invoke-EntryRequest -Method 'GET' -Path '/api/v1/auth/me' -Token $token
-    if ($me.Status -ne 200 -or $me.Body.username -ne 'hr-nginx-probe') {
+    if ($me.Status -ne 200 -or $me.Body.username -ne $probeUsername) {
         throw "The Bearer header did not reach the API through the proxy: $($me.RawBody)"
     }
 
@@ -357,12 +419,7 @@ try {
     if ($assignment.Status -ne 201) {
         throw "Creating the probe JobAssignment failed: $($assignment.Status) $($assignment.RawBody)"
     }
-    $viewerPasswordBody = "username=hm-nginx-probe&password=$([uri]::EscapeDataString($testPassword))"
-    $viewerLogin = Invoke-EntryRequest `
-        -Method 'POST' `
-        -Path '/api/v1/auth/token' `
-        -Body $viewerPasswordBody `
-        -ContentType 'application/x-www-form-urlencoded'
+    $viewerLogin = Invoke-Login -Username $viewerUsername
     if ($viewerLogin.Status -ne 200) {
         throw "The HIRING_MANAGER could not log in through the proxy: $($viewerLogin.RawBody)"
     }
