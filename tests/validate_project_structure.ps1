@@ -241,4 +241,55 @@ if ($envTemplate -match '(?i)(sk-[a-z0-9]{16,}|-----BEGIN [A-Z ]+PRIVATE KEY----
     throw '.env.example appears to contain a usable secret.'
 }
 
+# A gate that consumes a locally built image has to be the gate that builds it.
+#
+# ``verify`` runs most of its probes long before it builds anything, so a probe
+# that merely assumes a ``<name>:local`` tag exists passes on a machine with a
+# warm Docker cache and fails on a clean runner, where Docker tries to pull the
+# tag from Docker Hub and the gate dies on "pull access denied". That is exactly
+# how check_probe_python.ps1 broke CI while passing locally.
+#
+# This checks the pairing statically: every local tag a script mentions must be
+# produced by a ``--tag`` in that same script.
+$assignmentPattern = '(?<var>\$[A-Za-z][A-Za-z0-9_]*)\s*=\s*''(?<tag>[A-Za-z0-9._-]+:local)'''
+$tagPattern = '(?<tag>[A-Za-z0-9._-]+:local)'
+$scriptFiles = @(
+    @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'tests') -Filter '*.ps1' -File) +
+    @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'scripts') -Filter '*.ps1' -File)
+)
+
+foreach ($scriptFile in $scriptFiles) {
+    $scriptText = [System.IO.File]::ReadAllText($scriptFile.FullName, [System.Text.Encoding]::UTF8)
+    $assignments = @([regex]::Matches($scriptText, $assignmentPattern))
+    $mentionedTags = @(
+        [regex]::Matches($scriptText, $tagPattern) |
+            ForEach-Object { $_.Groups['tag'].Value } |
+            Sort-Object -Unique
+    )
+
+    foreach ($tag in $mentionedTags) {
+        $produced = $false
+        foreach ($assignment in $assignments) {
+            if ($assignment.Groups['tag'].Value -ne $tag) {
+                continue
+            }
+            $variable = [regex]::Escape($assignment.Groups['var'].Value)
+            if ($scriptText -match "'--tag',\s*${variable}\s*[,)]") {
+                $produced = $true
+                break
+            }
+        }
+        if (-not $produced -and $scriptText -match "'--tag',\s*'${tag}'") {
+            $produced = $true
+        }
+        if (-not $produced) {
+            throw (
+                "$($scriptFile.Name) uses the locally built image '$tag' but never builds " +
+                'it. A gate that consumes a local tag must be the gate that produces it, ' +
+                'or it fails on any machine without a warm Docker cache.'
+            )
+        }
+    }
+}
+
 Write-Output "PROJECT_STRUCTURE_VALIDATION_OK files=$($requiredPaths.Count) directories=$($requiredDirectories.Count) node=$nodeTarget"
