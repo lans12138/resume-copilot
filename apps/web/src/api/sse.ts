@@ -60,13 +60,24 @@ export function parseSseBlocks(buffer: string): { blocks: SseBlock[]; rest: stri
 /**
  * Decide how to handle an incoming sequence against the last accepted one
  * (§13.5: `sequence <= lastAccepted` 丢弃；跳号则断开重连).
+ *
+ * A gap can only be *detected* once there is a cursor to be continuous with, and
+ * `lastAccepted < 0` is the "no cursor yet" sentinel that also suppresses the
+ * `Last-Event-ID` header. The server numbers `AgentEvent.sequence` from 1
+ * (detailed design §4.5, `next_event_sequence`: 从 1 开始分配), so a fresh
+ * subscription's first frame is sequence 1 — never `0 + 1`. Treating that as a
+ * gap made every fresh stream abandon itself before accepting a single event,
+ * and `reconnectFrom(-1)` re-opened without a cursor, so the next attempt
+ * replayed the very same first frame: an unbounded reconnect loop in which the
+ * timeline rendered zero rows for a run that had ten events, and a page that
+ * looped until whatever raced last (a 404 after a revocation) wrote the notice.
  */
 export function classifySequence(
   sequence: number,
   lastAccepted: number,
 ): "accept" | "duplicate" | "gap" {
   if (sequence <= lastAccepted) return "duplicate"
-  if (sequence > lastAccepted + 1) return "gap"
+  if (lastAccepted >= 0 && sequence > lastAccepted + 1) return "gap"
   return "accept"
 }
 
@@ -106,7 +117,7 @@ export interface ConnectOptions {
  * header can be set — `EventSource` cannot send custom headers (§13.5). The
  * client maintains `lastAccepted`, deduplicates by sequence, reconnects on a gap
  * or network error with jittered exponential backoff (max 30s), stops on
- * 401/403/revocation, and closes cleanly on a terminal status.
+ * 401/403/404/revocation, and closes cleanly on a terminal status.
  */
 export function connectRunEvents(
   runId: string,
@@ -174,6 +185,17 @@ export function connectRunEvents(
     }
     if (response.status === 403) {
       opts.onError?.({ kind: "forbidden", message: "权限已变更" })
+      stop("client")
+      return
+    }
+    if (response.status === 404) {
+      // The run — or the job it belongs to — is no longer visible to this actor.
+      // The server expresses "you may not see this job" as a 404 rather than a
+      // 403 (`JobService.get_authorized` hides existence instead of confirming
+      // it, §12 allows either), so this is an access decision, not a transient
+      // error. Retrying cannot change it, and an unbounded retry against a
+      // refusal turns the browser into a load generator.
+      opts.onError?.({ kind: "forbidden", message: "流程或所属岗位不可见" })
       stop("client")
       return
     }

@@ -87,7 +87,14 @@ export function RunTimeline({ runId, runType, onTerminal }: RunTimelineProps) {
           {connText}
         </span>
       </div>
-      {conn === "error" && errorMsg ? <div className="notice notice-error"><strong>{errorMsg}</strong></div> : null}
+      {/* The reason must outlive the transition it causes. A revocation reports
+          through `onError` and then closes the stream at once, so gating the
+          notice on `conn === "error"` hid it behind "已结束" and the user was
+          told the stream stopped without being told why — the one thing §13.4
+          asks the browser to surface. `errorMsg` is only ever set by `onError`,
+          and every path that sets it also closes the connection, so showing it
+          whenever it exists cannot leave a stale notice behind. */}
+      {errorMsg ? <div className="notice notice-error"><strong>{errorMsg}</strong></div> : null}
       {events.length === 0 ? (
         <p className="muted">等待事件流…（{connText}）</p>
       ) : (
