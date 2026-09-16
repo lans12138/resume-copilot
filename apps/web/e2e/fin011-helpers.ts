@@ -23,12 +23,24 @@ import { expect, type Page, type Route } from "@playwright/test"
  */
 
 export const DEMO_USERNAME = "hr.demo"
+/**
+ * A HIRING_MANAGER assigned to the demo job. Needed because `JobAssignment`
+ * constrains nobody else: `JobService.get_authorized` returns any job to an HR
+ * actor without consulting assignments, so the revocation scenario requires a
+ * viewer whose access can actually be withdrawn.
+ */
+export const DEMO_MANAGER_USERNAME = "hm.demo"
 export const DEMO_PASSWORD = "demo-password-123"
 export const DEMO_JOB = "[DEMO] 高级后端工程师（Go / Python）"
 
 export async function signIn(page: Page): Promise<void> {
+  await signInAs(page, DEMO_USERNAME)
+}
+
+/** Sign in as a named seeded account (all seeded accounts share the password). */
+export async function signInAs(page: Page, username: string): Promise<void> {
   await page.goto("/login")
-  await page.getByLabel("用户名").fill(DEMO_USERNAME)
+  await page.getByLabel("用户名").fill(username)
   await page.getByLabel("密码").fill(DEMO_PASSWORD)
   await page.getByRole("button", { name: "进入工作台" }).click()
   await expect(page.getByRole("heading", { name: "岗位工作台" })).toBeVisible()
@@ -48,6 +60,15 @@ export async function openJob(page: Page): Promise<void> {
  * One SSE block in the server's exact wire format
  * (`backend/app/sse/schemas.py::format_event`): `event:`, `id:` (the sequence,
  * which doubles as `Last-Event-ID`), one `data:` line of JSON, blank line.
+ *
+ * The `sequence` is supplied by the caller and the injected specs grow it from 0,
+ * which is *not* what the server emits: `agent_events.sequence` is allocated from
+ * 1. The numbering here is therefore illustrative — it is only ever asserted for
+ * its own arithmetic (jump = gap, resume = last accepted). The real wire
+ * numbering is covered where it matters: `fin011-failure-matrix.spec.ts`'s
+ * "a real JobAssignment revocation" subscribes to a live run and asserts the
+ * timeline renders `#1`, which fails if the client calls the first real frame a
+ * gap. The unit-level invariant lives in `sse.test.ts` (`classifySequence(1, -1)`).
  */
 export function sseEvent(options: {
   sequence: number

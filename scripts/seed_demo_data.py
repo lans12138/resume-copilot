@@ -70,6 +70,12 @@ from backend.app.job_applications.models import (  # noqa: E402
 from backend.app.jobs.models import Job, JobAssignment, JobStatus, JobVersion  # noqa: E402
 
 DEMO_USERNAME = "hr.demo"
+# JobAssignment only constrains HIRING_MANAGER: `JobService.get_authorized`
+# returns any job to an HR actor without consulting assignments, and
+# `grant_assignment` refuses any other role. So the resource-level authorization
+# path — and with it the SSE revocation scenario (detailed design §19.6.5, and
+# the assignment API itself) — needs a manager who can actually be assigned.
+DEMO_MANAGER_USERNAME = "hm.demo"
 DEMO_PASSWORD = "demo-password-123"
 DEMO_JOB_TITLE = "[DEMO] 高级后端工程师（Go / Python）"
 DEMO_CANDIDATE_PREFIX = "Demo "
@@ -210,7 +216,9 @@ async def _reset(session: AsyncSession) -> None:
         delete(JobAssignment).where(JobAssignment.job_id.in_(demo_job_ids))
     )
     await session.execute(delete(Job).where(Job.title == DEMO_JOB_TITLE))
-    await session.execute(delete(User).where(User.username == DEMO_USERNAME))
+    await session.execute(
+        delete(User).where(User.username.in_([DEMO_USERNAME, DEMO_MANAGER_USERNAME]))
+    )
     await session.commit()
 
 
@@ -242,6 +250,23 @@ async def seed(reset: bool) -> None:
             print(f"[seed] created HR user '{DEMO_USERNAME}'")
         else:
             print(f"[seed] HR user '{DEMO_USERNAME}' already exists")
+
+        # 1b) Hiring manager (idempotent: reuse if already present).
+        manager = await session.scalar(
+            select(User).where(User.username == DEMO_MANAGER_USERNAME)
+        )
+        if manager is None:
+            manager = User(
+                username=DEMO_MANAGER_USERNAME,
+                password_hash=password_service.hash(DEMO_PASSWORD),
+                role=UserRole.HIRING_MANAGER,
+                is_active=True,
+            )
+            session.add(manager)
+            await session.flush()
+            print(f"[seed] created HIRING_MANAGER user '{DEMO_MANAGER_USERNAME}'")
+        else:
+            print(f"[seed] HIRING_MANAGER user '{DEMO_MANAGER_USERNAME}' already exists")
 
         # 2) ACTIVE job + version + assignment (idempotent)
         job = await session.scalar(select(Job).where(Job.title == DEMO_JOB_TITLE))
@@ -287,6 +312,29 @@ async def seed(reset: bool) -> None:
             print(f"[seed] created ACTIVE job '{DEMO_JOB_TITLE}'")
         else:
             print(f"[seed] job '{DEMO_JOB_TITLE}' already exists")
+
+        # 2b) Ensure the manager holds an active assignment to the demo job.
+        # Deliberately outside the create branch: a database seeded before the
+        # manager existed still needs the row, and re-running the seed must not
+        # duplicate it (the partial unique index on active assignments would
+        # reject that anyway).
+        existing_assignment = await session.scalar(
+            select(JobAssignment).where(
+                JobAssignment.job_id == job.id,
+                JobAssignment.user_id == manager.id,
+                JobAssignment.revoked_at.is_(None),
+            )
+        )
+        if existing_assignment is None:
+            session.add(
+                JobAssignment(
+                    job_id=job.id,
+                    user_id=manager.id,
+                    assigned_by=user.id,
+                    assigned_at=datetime.now(UTC),
+                )
+            )
+            print(f"[seed] assigned '{DEMO_MANAGER_USERNAME}' to the demo job")
 
         # 3) Candidates with READY profile + evidence chunks
         existing = set(
@@ -414,6 +462,10 @@ async def seed(reset: bool) -> None:
     await engine.dispose()
     print("[seed] done.")
     print(f"[seed] login as username='{DEMO_USERNAME}' password='{DEMO_PASSWORD}'")
+    print(
+        f"[seed] hiring manager username='{DEMO_MANAGER_USERNAME}' "
+        f"password='{DEMO_PASSWORD}' (assigned to the demo job)"
+    )
 
 
 def main() -> None:

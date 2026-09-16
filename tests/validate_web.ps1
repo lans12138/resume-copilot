@@ -126,8 +126,8 @@ catch {
     try {
         $logs = @('compose', '--project-name', $projectName, '--env-file', $envFile,
             '--file', $composeFile, '--file', $composeOverride)
-        Write-Host '--- compose logs: api, worker (tail 120, context only) ---'
-        & docker @logs logs --no-color --tail 120 api worker 2>&1 |
+        Write-Host '--- compose logs: api, worker (tail 400, context only) ---'
+        & docker @logs logs --no-color --tail 400 api worker 2>&1 |
             ForEach-Object { $_.ToString() } | Out-Host
         # The traceback is far above any useful tail: a full browser run emits
         # thousands of request lines, so search the whole log for the handler that
@@ -136,6 +136,16 @@ catch {
         & docker @logs logs --no-color --no-log-prefix api worker 2>&1 |
             Select-String -Pattern 'unhandled_exception' -SimpleMatch |
             ForEach-Object { $_.Line } | Out-Host
+        # ``tail`` is a guess, and it guessed wrong twice: the pool-exhaustion
+        # traceback (``QueuePool limit of size 5 overflow 10 reached``) that made
+        # every route answer 500 sat above a 120-line window, so the run looked
+        # like an unexplained e2e failure. Keep the whole thing next to the probe.
+        Write-Host '--- compose logs: whole api+worker log ---'
+        $fullLogPath = Join-Path $repoRoot '_web_api_full.log'
+        & docker @logs logs --no-color --no-log-prefix api worker 2>&1 |
+            ForEach-Object { $_.ToString() } |
+            Out-File -Encoding utf8 -FilePath $fullLogPath
+        Write-Host "full api+worker log written to $fullLogPath"
     }
     finally {
         $ErrorActionPreference = $previousPreference
