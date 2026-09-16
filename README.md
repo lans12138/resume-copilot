@@ -82,12 +82,12 @@ flowchart TB
 前置只需要 **Docker Desktop（含 Compose v2）**。Node 22 不是演示必需的——前端在镜像内由固定 Node 版本构建。
 
 ```bash
-# 日常启动：首次自动生成 .env，构建、迁移、seed、健康检查后保持运行
-pwsh ./start.ps1
+# Windows 日常启动：无需安装 PowerShell 7，也不修改系统执行策略
+.\start.cmd
 #   入口：http://localhost:8080
 ```
 
-`start.ps1` 默认保留已有容器卷和业务数据，重复运行是安全的；可选参数：`-OpenBrowser` 启动后打开页面，`-ResetDemo` 仅重置合成演示数据，`-Fresh` 明确删除本项目 Docker 卷并创建全新演示环境。`-Fresh` 与 `-ResetDemo` 不能同时使用。
+`start.cmd` 只对这一次进程绕过 PowerShell 执行策略，然后调用同目录的 `start.ps1`；不会修改机器的永久执行策略。启动器首次运行会自动生成 `.env`，默认保留已有容器卷和业务数据，重复运行是安全的。可选参数可直接透传，例如 `.\start.cmd -OpenBrowser`、`.\start.cmd -ResetDemo` 或 `.\start.cmd -Fresh`；`-Fresh` 与 `-ResetDemo` 不能同时使用。
 
 底层的 `scripts/start_stack.ps1` 是全新环境验证脚本：它拒绝复用残留资源、把 seed 连跑两次验证幂等，并默认在验证后连卷拆除；需要直接使用时加 `-KeepRunning` 才会保留栈。
 

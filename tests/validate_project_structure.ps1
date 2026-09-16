@@ -64,6 +64,7 @@ $requiredPaths = @(
     'deploy/nginx/nginx.conf',
     'deploy/nginx/security-headers.conf',
     'deploy/nginx/templates/default.conf.template',
+    'start.cmd',
     'start.ps1',
     'scripts/start_stack.ps1',
     'tests/validate_nginx_proxy.ps1',

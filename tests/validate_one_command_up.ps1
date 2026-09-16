@@ -38,6 +38,14 @@ $probeEnvFile = Join-Path $repoRoot '.env'
 # under a static contract here; the live probe below exercises the fresh-start
 # implementation that it delegates to.
 $dailyLauncher = Join-Path $repoRoot 'start.ps1'
+$windowsLauncher = Join-Path $repoRoot 'start.cmd'
+$windowsLauncherText = [System.IO.File]::ReadAllText($windowsLauncher, [System.Text.Encoding]::ASCII)
+if ($windowsLauncherText -notmatch 'powershell\.exe' -or
+    $windowsLauncherText -notmatch '-ExecutionPolicy Bypass' -or
+    $windowsLauncherText -notmatch 'start\.ps1' -or
+    $windowsLauncherText -notmatch '%\*') {
+    throw 'start.cmd must invoke start.ps1 with a process-scoped execution-policy bypass and forward arguments.'
+}
 $launcherTokens = $null
 $launcherErrors = $null
 $launcherText = [System.IO.File]::ReadAllText($dailyLauncher, [System.Text.Encoding]::UTF8)

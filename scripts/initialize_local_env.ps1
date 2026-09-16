@@ -35,9 +35,15 @@ function New-HexSecret {
         [int] $ByteCount
     )
 
-    $bytes = [byte[]]::new($ByteCount)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    return [Convert]::ToHexString($bytes).ToLowerInvariant()
+    $bytes = New-Object byte[] $ByteCount
+    $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    }
+    finally {
+        $generator.Dispose()
+    }
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
 
 $jwtPlaceholder = 'replace-with-at-least-48-random-characters-xxxxxxxxxxxx'
