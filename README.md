@@ -85,13 +85,14 @@ flowchart TB
 # 1) 配置环境变量：把占位 secret 换成真值
 cp .env.example .env
 #   JWT_SECRET 改 ≥48 位随机串，POSTGRES_PASSWORD / DATABASE_URL 里的密码保持一致
+#   （QWEN_API_KEY、LANGFUSE_* 保持占位符即可：Mock 模式不读模型端点，Langfuse 默认关闭）
 
 # 2) 一条命令：构建 → 迁移 → seed → 入口健康检查 → 浏览器登录 smoke
 pwsh scripts/start_stack.ps1 -KeepRunning
 #   入口：http://localhost:8080
 ```
 
-`start_stack.ps1` 会先检查是否残留同项目 Docker 资源（残留卷会让「全新」名不副实）、拒绝仍带 `replace-with-*` 占位符的 `.env`、把 seed 连跑两次以验证幂等、并**默认在结束前连卷一起拆掉**；要保留运行中的栈就加 `-KeepRunning`。
+`start_stack.ps1` 会先检查是否残留同项目 Docker 资源（残留卷会让「全新」名不副实）、拒绝仍带**阻塞级**占位符（`JWT_SECRET` / `POSTGRES_PASSWORD` / `DATABASE_URL`）的 `.env`、把 seed 连跑两次以验证幂等、并**默认在结束前连卷一起拆掉**；要保留运行中的栈就加 `-KeepRunning`。也可以直接 `pwsh scripts/project.ps1 env-init` 生成 `.env`，它会随机化 JWT 与数据库密码。
 
 手工等价步骤：
 
@@ -198,7 +199,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | 前端 | 69 个 `.ts` / `.tsx` / 约 6.5k 行；`tsc -b` 干净，`vitest` 22 个测试文件 **118 passed**，`vite build` 通过 |
 | E2E | 5 个 Playwright spec（含 FIN-010 非种子主路径、FIN-011 故障与安全矩阵） |
 | 迁移 | 12 个 Alembic 版本，head `0012_evaluation_tables`，25 张表 |
-| 探针 | `tests/` 下 24 个 PowerShell 探针脚本，全部接入 `project.ps1 verify` |
+| 探针 | `tests/` 下 24 个受版本控制的 PowerShell 探针，其中 **22 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
 | 运行时 | Python 3.12.14 / Node 22.23.2 / PostgreSQL 17 + pgvector / Redis 7.4-alpine / Nginx 1.29.3-alpine（镜像全部固定 tag 或 digest，无 `latest`） |
 
 ## 实现进度
