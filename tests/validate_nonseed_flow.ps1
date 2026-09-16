@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 # FIN-010 item 4: after the non-seed browser path completes, the database must
@@ -18,6 +18,13 @@ param()
 # would duplicate that work while adding a Playwright dependency to a shell
 # probe. What this probe adds is the non-seed candidate creation *and* the
 # impossible-to-observe counts.
+#
+# One step the browser spec skips is driven explicitly here: pinning verbatim
+# evidence. Evidence chunks are the reviewer's artifact, not the parser's, and
+# the vector recall channel is built from *embedded chunks* only -- a candidate
+# with none is absent from it (retrieval/vector.py). Pinning is therefore what
+# makes "the MatchRun finds this brand-new profile" a real claim rather than a
+# claim that happens to hold because another channel rescued the recall.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -251,7 +258,7 @@ try {
         (Invoke-Sql "SELECT status FROM resume_documents WHERE id = '$documentId';") -eq 'REVIEW_REQUIRED'
     })
 
-    # ---- 2. Confirm the profile under the demo job --------------------------
+    # ---- 2. Pin verbatim evidence, then confirm the profile ----------------
     # Read the draft through the API (by-document is job-free, which is exactly
     # how the review screen resolves a document to its draft).
     [void] (Wait-Until -Description 'the profile draft' -Probe {
@@ -262,6 +269,65 @@ try {
     $profileId = $draftResponse.Body.id
     $version = $draftResponse.Body.version
 
+    # 2a. Pin evidence -- the step the browser spec leaves out.
+    # Nothing in the pipeline invents a chunk: the parser produces blocks and the
+    # extractor produces a draft, but an EvidenceChunk is a verbatim excerpt a
+    # human pins on the review screen. That makes this step load-bearing twice
+    # over, and skipping it is what used to hang this probe on a vector that was
+    # never queued:
+    #   * ``confirm`` publishes ``embeddings.generate_chunks`` for the profile's
+    #     chunks, so with none pinned the task has an empty work set;
+    #   * the vector channel recalls embedded chunks only, so without a pin the
+    #     MatchRun below could not surface this brand-new profile on that channel.
+    # The locator is copied from the parser's own block payload so the pin is the
+    # same shape the review screen submits (see buildQuoteLocator in the web app).
+    $content = Invoke-Api -Method 'GET' -Path "/api/v1/documents/$documentId/content" -Token $token
+    if ($content.Status -ne 200) {
+        throw "Document content read failed with status $($content.Status): $($content.RawBody)"
+    }
+    $paragraphs = @($content.Body.blocks | Where-Object {
+        $_.locator.kind -eq 'docx_paragraph' -and $_.text.Trim()
+    })
+    if ($paragraphs.Count -lt 1) {
+        throw "The parsed fixture exposed no docx paragraph to pin: $($content.RawBody)"
+    }
+    # Two chunks, not one: "every chunk carries a vector" is only a real
+    # assertion once there is more than a single chunk to cover.
+    $pinnedCount = [Math]::Min(2, $paragraphs.Count)
+    $pinItems = @()
+    for ($index = 0; $index -lt $pinnedCount; $index++) {
+        $block = $paragraphs[$index]
+        $pinItems += @{
+            document_id = $documentId
+            chunk_index = $index
+            section_type = '工作经历'
+            locator = @{
+                kind = 'docx_paragraph'
+                paragraph_index = [int] $block.locator.paragraph_index
+                char_start = 0
+                char_end = $block.text.Length
+            }
+            text = $block.text
+        }
+    }
+    # Built by hand rather than with ``ConvertTo-Json -AsArray``: the probe has to
+    # stay readable under Windows PowerShell 5.1 too, and a one-element array
+    # there serialises as a bare object, which the list-typed route rejects 422.
+    $pinBody = '[' + (($pinItems | ForEach-Object { $_ | ConvertTo-Json -Depth 6 -Compress }) -join ',') + ']'
+    $pinned = Invoke-Api `
+        -Method 'POST' `
+        -Path "/api/v1/jobs/$($job.id)/profiles/$profileId/evidence" `
+        -Body $pinBody `
+        -ContentType 'application/json' `
+        -Token $token
+    if ($pinned.Status -ne 201) {
+        throw "Evidence pinning failed with status $($pinned.Status): $($pinned.RawBody)"
+    }
+    if (@($pinned.Body).Count -ne $pinnedCount) {
+        throw "Expected $pinnedCount pinned chunks, got $(@($pinned.Body).Count): $($pinned.RawBody)"
+    }
+
+    # 2b. Confirm.
     # Echo the draft's own profile_json back with only the intended edits applied
     # -- the same thing the review screen submits. Reconstructing the whole
     # object here would drift from the extractor's schema.
@@ -282,15 +348,25 @@ try {
         throw "Profile confirm failed with status $($confirm.Status): $($confirm.RawBody)"
     }
 
-    # The embedding task is enqueued by the confirm; wait for every chunk of this
-    # profile to carry a vector with the configured model.
-    [void] (Wait-Until -Description 'the embedding task to fill every chunk' -Probe {
+    # Assert the pinned rows are visible before waiting on the vector. A pin that
+    # silently failed would otherwise surface as a timeout on the embedding task
+    # below -- an error three steps away from its cause.
+    $chunkCount = Invoke-Sql (
+        "SELECT count(*) FROM evidence_chunks WHERE candidate_profile_id = '$profileId';"
+    )
+    if ($chunkCount -ne "$pinnedCount") {
+        throw "Expected $pinnedCount pinned evidence chunks for the profile, found $chunkCount."
+    }
+
+    # The embedding task is enqueued by the confirm; wait for every pinned chunk
+    # of this profile to carry a vector with the configured model.
+    [void] (Wait-Until -Description 'the embedding task to fill every pinned chunk' -Probe {
         $counts = Invoke-Sql (
             "SELECT count(*) || '|' || count(*) FILTER (WHERE embedding IS NOT NULL) " +
             "FROM evidence_chunks WHERE candidate_profile_id = '$profileId';"
         )
         $parts = $counts.Split('|')
-        return ($parts[0] -ne '0' -and $parts[0] -eq $parts[1])
+        return ($parts[0] -eq "$pinnedCount" -and $parts[0] -eq $parts[1])
     })
 
     # ---- 3. MatchRun over the demo job --------------------------------------
@@ -416,12 +492,14 @@ try {
         throw "The application still holds an active run slot: $activeSlot"
     }
 
-    # No orphaned file: the uploaded document is referenced by its profile, and
-    # its storage key is registered exactly once.
+    # No orphaned file: the uploaded document row still exists and is referenced
+    # by exactly one profile. Two independent scalar subqueries rather than one
+    # correlated form: the outer projection here is an aggregate, and PostgreSQL
+    # rejects an outer column reference inside a subquery of an aggregate query
+    # ("subquery uses ungrouped column ... from outer query").
     $orphanProbe = Invoke-Sql (
-        "SELECT count(*) || '|' || " +
-        "(SELECT count(*) FROM candidate_profiles WHERE document_id = rd.id) " +
-        "FROM resume_documents rd WHERE rd.id = '$documentId';"
+        "SELECT (SELECT count(*) FROM resume_documents WHERE id = '$documentId') || '|' || " +
+        "(SELECT count(*) FROM candidate_profiles WHERE document_id = '$documentId');"
     )
     if ($orphanProbe -ne '1|1') {
         throw "Expected the upload to be referenced by exactly 1 profile, found: $orphanProbe"
@@ -438,7 +516,8 @@ try {
     Write-Output (
         "NON_SEED_FLOW_OK run=$runId document=$documentId profile=$profileId " +
         "application=$applicationId applicationRun=$applicationRunId " +
-        "approvals=2 executed=2 interviews=1 activeSlot=NULL"
+        "chunks=$pinnedCount embedded=$pinnedCount approvals=2 executed=2 " +
+        "interviews=1 activeSlot=NULL"
     )
 }
 finally {

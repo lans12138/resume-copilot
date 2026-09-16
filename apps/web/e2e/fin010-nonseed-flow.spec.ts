@@ -11,8 +11,8 @@ import { expect, test, type Page } from "@playwright/test"
  * starts from the *seeded* demo job. Neither proves the two halves join up for
  * a candidate that did not exist before the test ran, which is what FIN-010
  * asks for: upload from the browser, let the worker parse it, confirm the
- * profile, let the embedding task run, and then carry that same brand-new
- * profile all the way to a scheduled interview.
+ * profile, let the confirm's embedding task be delivered, and then carry that
+ * same brand-new profile all the way to a scheduled interview.
  *
  * The candidate here is unique per run (a per-run display name), so the
  * assertions can be exact rather than "at least one": this is the only place
@@ -114,11 +114,13 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   })
 
   // ---- 3. Match run over the demo job -------------------------------------
-  // The embedding task (`embeddings.generate_chunks`) is enqueued by the
-  // confirm above and must have landed before the vector channel can recall
-  // this candidate. The spec asserts that indirectly: the candidate only
-  // appears in the ranking below if the embedding exists, and the vector cell
-  // is then checked on the candidate detail page in step 4b.
+  // This spec deliberately does not pin evidence. Pinning is the reviewer's
+  // call, not a prerequisite of the path, and the ranking below therefore does
+  // *not* depend on the embedding: the vector channel recalls embedded chunks
+  // only (`backend/app/retrieval/vector.py`), while the structured and keyword
+  // channels recall every READY profile. The vector channel for a brand-new
+  // profile is covered where a pin exists — `tests/integration/test_document_pipeline_e2e.py`
+  // and `tests/validate_nonseed_flow.ps1`.
   await page.goto("/jobs")
   await page.getByRole("link", { name: new RegExp(DEMO_JOB.replace(/[[\]]/g, "\\$&")) }).click()
   await page.getByRole("button", { name: "启动批量分析" }).click()
