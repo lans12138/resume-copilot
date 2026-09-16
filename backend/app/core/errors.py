@@ -132,7 +132,10 @@ def register_exception_handlers(application: FastAPI) -> None:
     """Register the shared API exception contract."""
     application.add_exception_handler(AppError, handle_app_error)  # type: ignore[arg-type]
     application.add_exception_handler(RequestValidationError, handle_validation_error)  # type: ignore[arg-type]
-    application.add_exception_handler(SqlTimeoutError, handle_pool_exhausted)  # type: ignore[arg-type]
+    # No `type: ignore` here: `handle_pool_exhausted` takes the base `Exception`,
+    # which is exactly what `add_exception_handler` declares. Adding one makes
+    # mypy fail the gate with `unused-ignore` instead of passing quietly.
+    application.add_exception_handler(SqlTimeoutError, handle_pool_exhausted)
     application.add_exception_handler(Exception, handle_unexpected_error)
 
 

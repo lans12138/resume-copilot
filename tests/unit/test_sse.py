@@ -728,6 +728,59 @@ class _PoolTrackingRepository(AgentRunRepository):
         await self._inner.refresh_for_poll()
         self.holding = False  # ending the transaction returns the connection to the pool
 
+    # Writing members. The SSE loop only reads, so these never run here — but
+    # `AgentRunRepository` is a Protocol and inheriting from it makes mypy demand
+    # every member, so a partial double fails the gate with `[abstract]` (CI run
+    # 35062225107). Delegating instead of raising `NotImplementedError` keeps the
+    # wrapper a *faithful* proxy, so the failure mode of an unexpected write is a
+    # real write rather than a mystery crash inside the double.
+    async def save_run(self, run: AgentRun) -> None:
+        await self._inner.save_run(run)
+
+    async def append_event(
+        self,
+        *,
+        run_id: UUID,
+        run_type: RunType,
+        event_type: AgentEventType,
+        node: str | None,
+        status: str,
+        message_key: str,
+        safe_payload: dict[str, Any],
+    ) -> AgentEvent:
+        return await self._inner.append_event(
+            run_id=run_id,
+            run_type=run_type,
+            event_type=event_type,
+            node=node,
+            status=status,
+            message_key=message_key,
+            safe_payload=safe_payload,
+        )
+
+    async def set_status(
+        self, run_id: UUID, status: RunStatus, *, finished: bool = False
+    ) -> None:
+        await self._inner.set_status(run_id, status, finished=finished)
+
+    async def list_events(self, run_id: UUID) -> list[AgentEvent]:
+        return await self._inner.list_events(run_id)
+
+    async def list_stale_runs(
+        self,
+        *,
+        run_type: RunType,
+        statuses: tuple[RunStatus, ...],
+        older_than: datetime,
+        limit: int,
+    ) -> list[AgentRun]:
+        return await self._inner.list_stale_runs(
+            run_type=run_type,
+            statuses=statuses,
+            older_than=older_than,
+            limit=limit,
+        )
+
     async def aclose(self) -> None:
         self.holding = False
         self.aclosed = True
@@ -924,7 +977,17 @@ async def _frames_hold_no_connection() -> None:
 
 
 class _FailingRepository(AgentRunRepository):
-    """Repository whose first read fails the way an exhausted pool does."""
+    """Repository whose first read fails the way an exhausted pool does.
+
+    Only ``get_run`` models the failure, because that is the *first* read the
+    stream performs: ``resolve_initial`` calls it before a single byte is written,
+    so the stream never reaches any other member. The remaining members exist
+    because ``AgentRunRepository`` is a Protocol — inheriting from it makes mypy
+    treat every member as abstract, so a partial double fails the gate with
+    ``[abstract]`` (CI run 35062225107). ``aclose`` in particular must stay a
+    no-op: it runs on the ``finally`` path and raising there would mask the very
+    error this double exists to surface.
+    """
 
     def __init__(self, error: Exception) -> None:
         self._error = error
@@ -932,6 +995,56 @@ class _FailingRepository(AgentRunRepository):
     async def get_run(self, run_id: UUID) -> AgentRun | None:
         del run_id
         raise self._error
+
+    async def save_run(self, run: AgentRun) -> None:
+        return None
+
+    async def append_event(
+        self,
+        *,
+        run_id: UUID,
+        run_type: RunType,
+        event_type: AgentEventType,
+        node: str | None,
+        status: str,
+        message_key: str,
+        safe_payload: dict[str, Any],
+    ) -> AgentEvent:
+        raise NotImplementedError
+
+    async def set_status(
+        self, run_id: UUID, status: RunStatus, *, finished: bool = False
+    ) -> None:
+        return None
+
+    async def list_events(self, run_id: UUID) -> list[AgentEvent]:
+        return []
+
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
+        return []
+
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
+        return None
+
+    async def list_stale_runs(
+        self,
+        *,
+        run_type: RunType,
+        statuses: tuple[RunStatus, ...],
+        older_than: datetime,
+        limit: int,
+    ) -> list[AgentRun]:
+        return []
+
+    async def refresh_for_poll(self) -> None:
+        return None
+
+    async def aclose(self) -> None:
+        return None
 
 
 def test_rejected_initial_resolution_releases_the_repository() -> None:
