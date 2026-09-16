@@ -26,6 +26,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from sqlalchemy.exc import TimeoutError as SqlTimeoutError
+
 from backend.app.agent.checkpoint import InMemoryCheckpointer
 from backend.app.agent.models import (
     AgentEvent,
@@ -64,13 +66,20 @@ def _sse_service(
     notifier: InMemoryEventNotifier,
     *,
     access_granted: bool = True,
+    denial_status: int = 403,
 ) -> tuple[SseService, dict[str, bool]]:
     state: dict[str, bool] = {"granted": access_granted}
 
     async def authorize_job(actor: Actor, job_id: UUID) -> None:
         if not state["granted"]:
+            # 403 is how the SSE layer's own tests model a refusal; 404 is how
+            # ``JobService.get_authorized`` actually words it (``JOB_NOT_FOUND``
+            # hides the job's existence). Both are access decisions and both must
+            # close the stream with a frame.
             raise AppError(
-                code="FORBIDDEN", http_status=403, safe_message="当前用户无权查看该岗位"
+                code="JOB_NOT_FOUND" if denial_status == 404 else "FORBIDDEN",
+                http_status=denial_status,
+                safe_message="当前用户无权查看该岗位",
             )
 
     svc = SseService(
@@ -293,6 +302,41 @@ async def _revocation_closes() -> None:
     assert "SSE_AUTH_REVOKED" in text
     assert _sequences(text) == [0, 1]  # post-revocation event was withheld
     assert _event_types(text).count("STATUS_CHANGED") == 1
+
+
+def test_midstream_revocation_via_404_also_closes_the_stream() -> None:
+    """A job that stops resolving to the viewer is a revocation, not an outage.
+
+    ``JobService.get_authorized`` words "you may not see this job" as
+    ``JOB_NOT_FOUND``/404 rather than 403 — it hides the job's existence instead
+    of confirming it, and §12 admits either status for the events route. Reported
+    as an unexpected failure, that 404 escaped ``stream`` and tore the response
+    body down mid-write, which a browser cannot tell apart from a dropped
+    connection: it reconnected, was refused 404 again, and retried forever, so a
+    revoked viewer turned into a live retry storm against the API. The revocation
+    frame plus a clean close is what makes the refusal an answer.
+    """
+    asyncio.run(_revocation_closes_via_404())
+
+
+async def _revocation_closes_via_404() -> None:
+    notifier = InMemoryEventNotifier()
+    agent_repo = InMemoryAgentRunRepository()
+    run_service = _application_run_service(agent_repo, notifier)
+    svc, state = _sse_service(agent_repo, notifier, access_granted=True, denial_status=404)
+
+    run, _job_id = await _create_run(run_service)  # seq 0
+    await run_service.emit_status(run, status=RunStatus.RUNNING, message_key="r.1")  # seq 1
+
+    gen = svc.stream(_actor(), run.id, -1)
+    task = asyncio.create_task(_drain(gen, 0.6))
+    await asyncio.sleep(0.02)  # first batch (0,1) sent, now polling
+    state["granted"] = False  # the assignment is revoked mid-connection
+    await run_service.emit_status(run, status=RunStatus.RUNNING, message_key="r.2")
+
+    text = await task
+    assert "SSE_AUTH_REVOKED" in text
+    assert _sequences(text) == [0, 1]  # post-revocation event was withheld
 
 
 def test_match_run_resolves_job_from_config_snapshot() -> None:
@@ -636,3 +680,352 @@ async def _heartbeats_while_running() -> None:
     # heartbeat frames are bare ":" blocks; the replay batch has none.
     heartbeats = [block for block in text.split("\n\n") if block.strip() == ":"]
     assert len(heartbeats) >= 2, text
+
+
+# --------------------------------------------------------------------------- #
+# Pool hygiene (CI run 35052716044).
+# --------------------------------------------------------------------------- #
+async def _allow_everything(_actor: Actor, _job_id: UUID) -> None:
+    return None
+
+
+class _StopStream(Exception):
+    """Sentinel the observing subscription raises once it has seen enough windows."""
+
+
+class _PoolTrackingRepository(AgentRunRepository):
+    """In-memory repository that models "a statement holds a pool slot until rollback".
+
+    ``AsyncSession`` checks a connection out on the first statement of a transaction
+    and keeps it until that transaction ends, so every read sets the flag and
+    ``refresh_for_poll`` (whose body is ``rollback + expire_all``) clears it. That is
+    precisely the pair of calls the SSE loop controls, which is why the loop's call
+    placement is observable from here.
+    """
+
+    def __init__(self, inner: InMemoryAgentRunRepository) -> None:
+        self._inner = inner
+        self.holding = False
+        self.aclosed = False
+
+    async def get_run(self, run_id: UUID) -> AgentRun | None:
+        self.holding = True
+        return await self._inner.get_run(run_id)
+
+    async def list_events_after(
+        self, run_id: UUID, last_sequence: int, limit: int
+    ) -> list[AgentEvent]:
+        self.holding = True
+        return await self._inner.list_events_after(run_id, last_sequence, limit)
+
+    async def get_event_by_sequence(
+        self, run_id: UUID, sequence: int
+    ) -> AgentEvent | None:
+        self.holding = True
+        return await self._inner.get_event_by_sequence(run_id, sequence)
+
+    async def refresh_for_poll(self) -> None:
+        await self._inner.refresh_for_poll()
+        self.holding = False  # ending the transaction returns the connection to the pool
+
+    async def aclose(self) -> None:
+        self.holding = False
+        self.aclosed = True
+        await self._inner.aclose()
+
+
+class _ObservingSubscription:
+    """Records whether a pooled connection was held at each heartbeat deadline."""
+
+    def __init__(
+        self, repo: _PoolTrackingRepository, observed: list[bool], windows: int
+    ) -> None:
+        self._repo = repo
+        self._observed = observed
+        self._windows = windows
+
+    async def wait(self, timeout: float) -> bool:
+        del timeout
+        self._observed.append(self._repo.holding)
+        if len(self._observed) >= self._windows:
+            raise _StopStream
+        return False
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _ObservingNotifier:
+    """Notifier whose subscription observes the repository instead of waiting."""
+
+    def __init__(
+        self, repo: _PoolTrackingRepository, observed: list[bool], windows: int
+    ) -> None:
+        self._repo = repo
+        self._observed = observed
+        self._windows = windows
+
+    def subscribe(self, run_id: UUID) -> _ObservingSubscription:
+        del run_id
+        return _ObservingSubscription(self._repo, self._observed, self._windows)
+
+    async def publish(self, run_id: UUID, sequence: int) -> None:
+        del run_id, sequence
+        return None
+
+
+def test_idle_stream_holds_no_pooled_connection() -> None:
+    """An SSE stream must give its connection back before it goes idle.
+
+    Regression for CI run 35052716044. A poll's reads leave their transaction open,
+    and the borrowed connection stays checked out until something ends it. While the
+    only end-of-cycle call sat at the *top* of the next iteration, that connection was
+    held across the whole heartbeat wait — the longest part of the cycle
+    (``SSE_HEARTBEAT_SECONDS``, 1s here, 15s in some deployments) — so every live
+    stream pinned a pool slot permanently. A handful of concurrent streams then
+    exhausted the 5+10 pool and *every* request in the process, login included,
+    answered 500 once ``DB_POOL_TIMEOUT`` (30s) had elapsed.
+    """
+    asyncio.run(_idle_stream_holds_no_connection())
+
+
+async def _idle_stream_holds_no_connection() -> None:
+    notifier = InMemoryEventNotifier()
+    inner = InMemoryAgentRunRepository()
+    run_service = _application_run_service(inner, notifier)
+    repo = _PoolTrackingRepository(inner)
+    observed: list[bool] = []
+
+    run, _job_id = await _create_run(run_service)  # seq 0, non-terminal -> the loop idles
+
+    svc = SseService(
+        repo,
+        _allow_everything,
+        _ObservingNotifier(repo, observed, windows=3),
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+
+    chunks: list[str] = []
+    try:
+        async for chunk in svc.stream(_actor(), run.id, -1):
+            chunks.append(chunk)
+    except _StopStream:
+        pass
+
+    assert len(observed) >= 3, f"the stream must idle at least three times: {observed}"
+    assert True not in observed, (
+        "an idle SSE stream held a pooled connection across the heartbeat wait: "
+        f"checked out at deadlines {observed}"
+    )
+    # The replay batch still arrives before the first idle window.
+    assert _sequences("".join(chunks)) == [0]
+
+
+def test_initial_resolution_releases_its_connection() -> None:
+    """The pre-stream handshake must not leave a connection checked out.
+
+    Regression for web probe run 2 (2026-09-16). ``resolve_initial`` reads the run
+    and the cursor through the stream's long-lived session, and the response only
+    starts iterating ``stream`` afterwards. Any client that disappears in that gap
+    leaves the generator unentered, so ``stream``'s ``finally`` — the only other
+    place that releases the repository — never runs and the pooled connection is
+    gone for good. Fourteen such sessions filled the 5+10 pool and turned login
+    into a 14s request answered by a 503 on everything that needed a connection.
+    """
+    asyncio.run(_initial_resolution_releases())
+
+
+async def _initial_resolution_releases() -> None:
+    notifier = InMemoryEventNotifier()
+    inner = InMemoryAgentRunRepository()
+    run_service = _application_run_service(inner, notifier)
+    repo = _PoolTrackingRepository(inner)
+    run, _job_id = await _create_run(run_service)
+
+    svc = SseService(
+        repo,
+        _allow_everything,
+        notifier,
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+
+    cursor = await svc.resolve_initial(_actor(), run.id, None)
+
+    assert cursor == -1
+    assert repo.holding is False, (
+        "the handshake returned a cursor while still holding a pooled connection"
+    )
+    assert repo.aclosed is False, (
+        "the handshake releases the connection by ending the transaction (rollback), "
+        "not by closing the session the stream is about to reuse"
+    )
+
+
+def test_frames_are_yielded_without_a_pooled_connection() -> None:
+    """Every frame must be produced after the poll's transaction has ended.
+
+    Regression for web probe run 2 (2026-09-16). ``yield`` suspends the generator
+    and hands control to the ASGI layer to write the socket, and a suspended
+    generator cannot release a connection — nothing runs in it until it is resumed.
+    While the frames were yielded *inside* the read transaction, a browser that
+    stalled mid-frame or navigated away parked that connection in ``idle in
+    transaction`` for as long as the response object lived. Fourteen streams sat in
+    exactly that state, all of them on the events SELECT, and the pool was gone.
+    The frame strings are now rendered inside the transaction and the transaction is
+    ended before the first one is yielded.
+    """
+    asyncio.run(_frames_hold_no_connection())
+
+
+async def _frames_hold_no_connection() -> None:
+    notifier = InMemoryEventNotifier()
+    inner = InMemoryAgentRunRepository()
+    run_service = _application_run_service(inner, notifier)
+    repo = _PoolTrackingRepository(inner)
+    observed: list[bool] = []
+
+    run, _job_id = await _create_run(run_service)  # seq 0, non-terminal
+
+    svc = SseService(
+        repo,
+        _allow_everything,
+        # Wide enough that the subscription never stops the loop; this test opts out
+        # by closing the generator itself.
+        _ObservingNotifier(repo, observed, windows=99),
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+
+    # Inspecting the flag after each ``__anext__`` returns is exactly "what was held
+    # while the generator was suspended at that yield".
+    checked: list[tuple[str, bool]] = []
+    stream = svc.stream(_actor(), run.id, -1)
+    try:
+        while len(checked) < 3:  # retry, the replayed event, the heartbeat
+            chunk = await stream.__anext__()
+            checked.append((chunk, repo.holding))
+    except StopAsyncIteration:
+        pass
+    finally:
+        await stream.aclose()
+
+    assert len(checked) == 3, f"expected retry + event + heartbeat: {checked}"
+    assert _sequences("".join(chunk for chunk, _ in checked)) == [0]
+    held = [holding for _, holding in checked]
+    assert True not in held, (
+        "a frame was yielded while a pooled connection was still checked out: "
+        f"held={held} in {[chunk.splitlines()[0] for chunk, _ in checked]}"
+    )
+
+
+class _FailingRepository(AgentRunRepository):
+    """Repository whose first read fails the way an exhausted pool does."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    async def get_run(self, run_id: UUID) -> AgentRun | None:
+        del run_id
+        raise self._error
+
+
+def test_rejected_initial_resolution_releases_the_repository() -> None:
+    """A 400/403/404 from the pre-stream resolution must hand its connection back.
+
+    ``stream``'s ``finally`` is the only other place that releases the repository, and
+    it never runs when resolution raises before the first byte. Left implicit, the
+    session is abandoned to the garbage collector while still checked out, so every
+    rejected ``/events`` request costs the process a pooled connection *permanently* —
+    and a viewer without an active ``JobAssignment`` is a 403, which is a normal
+    answer rather than a reason to bleed the pool.
+    """
+    asyncio.run(_rejected_resolution_releases())
+
+
+async def _rejected_resolution_releases() -> None:
+    notifier = InMemoryEventNotifier()
+    inner = InMemoryAgentRunRepository()
+    run_service = _application_run_service(inner, notifier)
+    run, job_id = await _create_run(run_service)
+
+    # Unknown run -> 404 before any byte is streamed.
+    unknown = _PoolTrackingRepository(inner)
+    unknown_service = SseService(
+        unknown,
+        _allow_everything,
+        notifier,
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+    not_found = False
+    try:
+        await unknown_service.resolve_initial(_actor(), uuid4(), None)
+    except AppError as error:
+        not_found = error.http_status == 404
+    assert not_found, "an unknown run must be rejected 404"
+    assert unknown.aclosed, "a 404 must not leave the repository's connection checked out"
+
+    # Known run, revoked assignment -> 403 before any byte is streamed.
+    async def deny(_actor: Actor, _job_id: UUID) -> None:
+        raise AppError(code="FORBIDDEN", http_status=403, safe_message="当前用户无权查看该岗位")
+
+    denied = _PoolTrackingRepository(inner)
+    denied_service = SseService(
+        denied,
+        deny,
+        notifier,
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+    forbidden = False
+    try:
+        await denied_service.resolve_initial(_actor(), run.id, None)
+    except AppError as error:
+        forbidden = error.http_status == 403
+    assert forbidden, f"a revoked assignment must be rejected 403 (job {job_id})"
+    assert denied.aclosed, "a 403 must not leave the repository's connection checked out"
+
+
+def test_dependency_failure_is_not_reported_as_a_revocation() -> None:
+    """A database outage must not be published to the browser as ``SSE_AUTH_REVOKED``.
+
+    The poll step used to catch ``Exception`` and emit the revocation frame, which
+    the client honours by dropping the session and returning to the login screen.
+    In CI run 35052716044 a saturated pool therefore read as "your access was
+    revoked" on every stream that opened. Only a 401/403 may produce that frame;
+    everything else has to stay what it is.
+    """
+    asyncio.run(_dependency_failure_is_not_relabelled())
+
+
+async def _dependency_failure_is_not_relabelled() -> None:
+    failure = SqlTimeoutError(
+        "QueuePool limit of size 5 overflow 10 reached, connection timed out, timeout 30.00"
+    )
+    svc = SseService(
+        _FailingRepository(failure),
+        _allow_everything,
+        InMemoryEventNotifier(),
+        heartbeat_seconds=HEARTBEAT,
+        batch_size=100,
+        retry_milliseconds=1000,
+    )
+
+    chunks: list[str] = []
+    raised = False
+    try:
+        async for chunk in svc.stream(_actor(), uuid4(), -1):
+            chunks.append(chunk)
+    except SqlTimeoutError:
+        raised = True
+
+    assert raised, "a non-authorization failure must propagate instead of closing the stream"
+    assert "SSE_AUTH_REVOKED" not in "".join(chunks)
+

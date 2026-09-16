@@ -7,13 +7,19 @@
   out-of-range or foreign cursor is rejected with ``INVALID_EVENT_CURSOR``/400
   (§13.3 step 2).
 * **Continuous authorization** — every replay batch, every live batch, and every
-  heartbeat re-checks run access. A revoked ``JobAssignment`` (or disabled user)
-  stops business events and closes the stream with ``SSE_AUTH_REVOKED`` (§13.4).
-  Authorization is checked *before* reading sensitive events, never after.
+  heartbeat re-checks run access. A revoked ``JobAssignment`` — or an actor that
+  may no longer see the job at all — stops business events and closes the stream
+  with ``SSE_AUTH_REVOKED`` (§13.4). Authorization is checked *before* reading
+  sensitive events, never after. Only the access decisions (401/403/404) are
+  reported as a revocation; any other failure propagates as itself, because
+  publishing an outage as a permission change makes the browser drop a session
+  that was never invalid.
 * **Live loop** — after catching up, the stream awaits the notifier (Redis Pub/Sub
   in production, an in-process broadcast in tests) or a heartbeat. The notifier
   carries only the sequence; the loop re-reads PostgreSQL, so a lost notification
-  is recovered by the next heartbeat (§13.2).
+  is recovered by the next heartbeat (§13.2). The borrowed connection is released
+  *before every ``yield``* and before the idle wait, so neither a suspended
+  stream nor an idle one holds a pool slot.
 * **Terminal close** — once the run reaches COMPLETED/FAILED/CANCELLED the stream
   emits a final heartbeat and closes (§13.3 step 6).
 
@@ -25,13 +31,15 @@ process-global notifier.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from uuid import UUID
 
 from backend.app.agent.models import AgentRun
 from backend.app.agent.repository import AgentRunRepository
 from backend.app.auth.tokens import Actor
-from backend.app.core.errors import app_error
+from backend.app.core.errors import AppError, app_error
 from backend.app.sse.notifier import EventNotifier
 from backend.app.sse.schemas import (
     TERMINAL_STATUSES,
@@ -72,16 +80,42 @@ class SseService:
         valid sequence belonging to this run. Must run *before* the first byte is
         streamed so the HTTP status can be set normally.
         """
-        run = await self._agent_repo.get_run(run_id)
-        if run is None:
-            raise app_error("RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
-        await self._authorize_run(actor, run)
-        return await self._parse_cursor(run_id, last_event_id)
+        try:
+            run = await self._agent_repo.get_run(run_id)
+            if run is None:
+                raise app_error("RUN_NOT_FOUND", http_status=404, safe_message="流程不存在")
+            await self._authorize_run(actor, run)
+            cursor = await self._parse_cursor(run_id, last_event_id)
+        except BaseException:
+            # The reads above borrowed a connection from the pool. When this method
+            # raises, ``stream`` never runs, so its ``finally`` — the only other
+            # caller of ``aclose`` — never runs either, and the session would be
+            # abandoned to the garbage collector still checked out (SQLAlchemy warns
+            # "garbage collector is cleaning up non-checked-in connection"). A viewer
+            # without an assignment getting a 403 is a normal answer, not a reason to
+            # permanently cost the process a pool slot. ``shield`` so the release also
+            # completes when the request was cancelled mid-resolution, and
+            # ``suppress`` so this frame re-raises the original failure.
+            with contextlib.suppress(BaseException):
+                await asyncio.shield(self._agent_repo.aclose())
+            raise
+        # The handshake is over and the route only needs the cursor: release the
+        # connection before the response starts. Otherwise a client that vanishes
+        # in the gap between the headers and the first body chunk leaves the session
+        # checked out against a stream that never begins — and because the generator
+        # was never entered, no ``finally`` will ever clean it up.
+        await self._agent_repo.refresh_for_poll()
+        return cursor
 
     async def stream(
         self, actor: Actor, run_id: UUID, last_sequence: int
     ) -> AsyncGenerator[str, None]:
         """Yield SSE frames: replay batches, live updates, heartbeats, then close."""
+        # A generator suspended at a ``yield`` cannot hand its pooled connection
+        # back, so nothing below may park a connection across a frame. The handshake
+        # already released its own; this covers a stream driven without it (tests,
+        # or a caller that skipped ``resolve_initial``).
+        await self._agent_repo.refresh_for_poll()
         yield format_retry(self._retry_ms)
         subscription = self._notifier.subscribe(run_id)
         try:
@@ -96,19 +130,62 @@ class SseService:
                     run = await self._agent_repo.get_run(run_id)
                     if run is None:
                         return  # run disappeared; close quietly
+                    # Read every ORM attribute this iteration needs *before* the
+                    # transaction ends. ``refresh_for_poll`` expires the identity map,
+                    # so touching a lazy attribute after it would quietly re-open a
+                    # transaction at the exact point the stream is about to yield.
+                    terminal = run.status.value in TERMINAL_STATUSES
                     await self._authorize_run(actor, run)
-                except Exception:
+                except AppError as error:
+                    # Only a real access decision may be reported as one. A
+                    # blanket ``except Exception`` used to turn a database outage
+                    # into ``SSE_AUTH_REVOKED``, which the browser honours by
+                    # dropping the session and bouncing the user to the login
+                    # screen — i.e. an infrastructure failure was published as a
+                    # permission change (CI run 35052716044). A dependency failure
+                    # must stay one, so anything outside this set re-raises.
+                    #
+                    # 404 belongs to the set because it is how
+                    # ``JobService.get_authorized`` says "you may not see this
+                    # job": ``JOB_NOT_FOUND`` hides existence instead of confirming
+                    # it, and §12 allows 403 *or* 404 for the events route. Letting
+                    # that escape would tear the body down mid-stream, which the
+                    # browser cannot distinguish from a dropped connection — it
+                    # would reconnect, be refused 404 again, and retry forever. The
+                    # frame is what turns the closure into an answer.
+                    if error.http_status not in (401, 403, 404):
+                        raise
+                    await self._agent_repo.refresh_for_poll()
                     yield format_auth_revoked()
                     return
 
                 events = await self._agent_repo.list_events_after(
                     run_id, last_sequence, self._batch
                 )
-                for event in events:
-                    yield format_event(event)
-                    last_sequence = event.sequence
+                # Render the frames while the transaction is still the one that read
+                # them, then end that transaction. The rows are plain data and
+                # ``format_event`` does no IO, so the finished strings outlive the
+                # rollback; yielding the ORM events instead would touch expired
+                # attributes after it and pull the connection straight back.
+                frames = [format_event(event) for event in events]
+                if events:
+                    last_sequence = events[-1].sequence
 
-                if run.status.value in TERMINAL_STATUSES:
+                # Release the borrowed connection before yielding *and* before going
+                # idle. Ending the transaction is what actually hands the pooled
+                # connection back, and a suspended generator cannot do it: a browser
+                # that stalls mid-frame, navigates away, or is closed while a
+                # reconnect is pending parked the connection for good. Fourteen such
+                # streams sat in ``idle in transaction`` — every one of them on this
+                # very events SELECT — filled the 5+10 pool, and turned every
+                # unrelated request, login included, into a 30s wait followed by a 503
+                # once ``DB_POOL_TIMEOUT`` expired (web probe run 2, 2026-09-16).
+                await self._agent_repo.refresh_for_poll()
+
+                for frame in frames:
+                    yield frame
+
+                if terminal:
                     yield format_heartbeat()
                     return
 
