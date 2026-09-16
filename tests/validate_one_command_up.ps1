@@ -4,6 +4,14 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Decode container output as UTF-8 regardless of the host's console codepage: a
+# child pwsh inherits its parent's, which on a Chinese Windows host is cp936, and
+# the stack's own logging is UTF-8. CI runs with a UTF-8 console, so without this
+# a local run can disagree with CI for reasons that have nothing to do with the
+# stack.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 # FIN-012 item 4: "one entry command on a fresh clone/volume".
 #
 # The claim under test is not "the script exits 0" — it is that a *fresh* project
@@ -89,6 +97,14 @@ try {
 
     Write-Host '[probe] Invoking scripts/start_stack.ps1 on a fresh project...'
     $entryScript = Join-Path $repoRoot 'scripts/start_stack.ps1'
+    # Read as UTF-8 and run the text as a script block, so the host's console
+    # codepage cannot garble the script's own non-ASCII text.
+    #
+    # That choice costs ``$PSScriptRoot``: a script block created from text has no
+    # script path, and the entry script derives the repository root from it. It is
+    # therefore handed ``-RepoRoot`` explicitly — without that the entry command
+    # failed on its very first line with "Cannot bind argument to parameter 'Path'
+    # because it is an empty string", before doing anything observable.
     $scriptBlock = [scriptblock]::Create(
         [System.IO.File]::ReadAllText($entryScript, [System.Text.Encoding]::UTF8)
     )
@@ -96,6 +112,7 @@ try {
         -ProjectName $projectName `
         -EnvFile '.env' `
         -EntryPort $entryPort `
+        -RepoRoot $repoRoot `
         *>&1 | ForEach-Object { $_.ToString() }
 
     $output | ForEach-Object { Write-Host $_ }

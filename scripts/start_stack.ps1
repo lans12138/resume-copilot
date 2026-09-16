@@ -33,6 +33,7 @@ param(
     [string] $ProjectName = 'resume-copilot',
     [string] $EnvFile = '.env',
     [int] $EntryPort = 8080,
+    [string] $RepoRoot = '',
     [switch] $KeepRunning,
     [switch] $SkipBrowserSmoke
 )
@@ -40,7 +41,35 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$repoRoot = Split-Path -Parent $PSScriptRoot
+# Resolve the repository root explicitly rather than assuming ``$PSScriptRoot``.
+#
+# ``$PSScriptRoot`` is empty when this file is loaded as text and run as a script
+# block — which tests/validate_one_command_up.ps1 does deliberately, so that it can
+# read the source as UTF-8 instead of letting the host's console codepage decide.
+# Under ``Set-StrictMode -Version Latest``, ``Split-Path -Parent ''`` is a hard
+# error rather than a silently wrong path, so the entry command died on its first
+# line whenever a harness drove it that way. Accept the value from the caller when
+# it has one, derive it when running as the documented script, and fail loudly
+# when neither is available — a wrong root would only surface much later, as a
+# "file not found" on compose.yaml.
+#
+# The result is resolved into ``$resolvedRoot`` before being published as
+# ``$repoRoot``, and that is not stylistic: PowerShell variable names are
+# **case-insensitive**, so the parameter ``$RepoRoot`` and the local ``$repoRoot``
+# are one and the same variable. Seeding it with ``''`` first (as this block
+# originally did) erases the argument before it can be read, and the caller's
+# ``-RepoRoot`` silently becomes a no-op.
+if ($RepoRoot) {
+    $resolvedRoot = $RepoRoot
+}
+elseif ($PSScriptRoot) {
+    $resolvedRoot = Split-Path -Parent $PSScriptRoot
+}
+else {
+    throw 'Cannot determine the repository root: run this script by path, or pass -RepoRoot when loading it as a script block.'
+}
+$repoRoot = $resolvedRoot
+
 $composeFile = Join-Path $repoRoot 'compose.yaml'
 $composeOverride = Join-Path $repoRoot 'compose.override.yaml'
 $envPath = Join-Path $repoRoot $EnvFile
@@ -148,11 +177,23 @@ $dbName = Get-EnvValue -Text $envText -Name 'POSTGRES_DB' -Default 'resume_copil
 $previousEntryPort = $env:WEB_HOST_PORT
 $env:WEB_HOST_PORT = "$EntryPort"
 
+# The outer ``@()`` is load-bearing, not decoration.
+#
+# A pipeline that produces no output assigns ``$null``, not an empty array — the
+# pipeline operator binds looser than ``+``, so the whole
+# ``(@(ps) + @(volumes)) | Where-Object {...}`` expression collapses to
+# ``$null`` exactly when nothing matches. That is the *normal* case for the
+# fresh-clone run this script exists for, and under
+# ``Set-StrictMode -Version Latest`` reading ``$null.Count`` on the next line is a
+# fatal error: the documented one-command path died immediately with
+# "The property 'Count' cannot be found on this object" and never built anything.
 $projectResources = @(
-    & docker ps --all --filter "label=com.docker.compose.project=$ProjectName" --format '{{.Names}}'
-) + @(
-    & docker volume ls --filter "label=com.docker.compose.project=$ProjectName" --format '{{.Name}}'
-) | Where-Object { $_ -and $_.Trim() }
+    @(
+        & docker ps --all --filter "label=com.docker.compose.project=$ProjectName" --format '{{.Names}}'
+    ) + @(
+        & docker volume ls --filter "label=com.docker.compose.project=$ProjectName" --format '{{.Name}}'
+    ) | Where-Object { $_ -and $_.Trim() }
+)
 
 if ($projectResources.Count -gt 0) {
     throw (
@@ -194,8 +235,9 @@ try {
     Invoke-Compose @('--profile', 'tools', 'run', '--rm', 'seed')
     Invoke-Compose @('--profile', 'tools', 'run', '--rm', 'seed')
 
-    # Bootstrap the demo HR account with a credential that only lives in this
-    # process, so the browser smoke check has something to log in with.
+    # The seed script provisions the demo account; this controlled bootstrap
+    # re-asserts the same credentials and is an idempotent no-op when the
+    # account already matches (it fails loudly on a credential conflict).
     Invoke-Compose @(
         'run', '--rm', '--no-deps',
         '--env', "BOOTSTRAP_USERNAME=$demoUsername",
