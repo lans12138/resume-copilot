@@ -39,3 +39,14 @@ tmp/
 # so these are only ever local debugging leftovers and must never be committed.
 ci_logs/
 git_verify.txt
+/probe_tmp/
+
+# Ad-hoc root-level diagnostics. Canonical probes belong in tests/; files with
+# these names are disposable command output and one-off troubleshooting helpers.
+/_*.log
+/_*.out
+/_*.txt
+/_*.ps1
+/_*.py
+/_*.json
+/_*.exit

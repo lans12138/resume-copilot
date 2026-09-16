@@ -224,7 +224,22 @@ if ($npmConfig -notcontains 'registry=https://registry.npmjs.org/') {
 }
 
 $gitignore = Get-Content -LiteralPath (Join-Path $repoRoot '.gitignore')
-foreach ($ignorePattern in @('.env', '.env.*', '!.env.example', 'node_modules/', '.venv/')) {
+foreach ($ignorePattern in @(
+    '.env',
+    '.env.*',
+    '!.env.example',
+    'node_modules/',
+    '.venv/',
+    'ci_logs/',
+    '/probe_tmp/',
+    '/_*.log',
+    '/_*.out',
+    '/_*.txt',
+    '/_*.ps1',
+    '/_*.py',
+    '/_*.json',
+    '/_*.exit'
+)) {
     if ($gitignore -notcontains $ignorePattern) {
         throw "Missing .gitignore rule: $ignorePattern"
     }
