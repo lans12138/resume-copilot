@@ -303,4 +303,35 @@ foreach ($scriptFile in $scriptFiles) {
     }
 }
 
+# A teardown has to see every profile the probe started.
+#
+# ``storage-init`` and ``seed`` live in the ``tools`` profile, and running
+# ``migrate`` pulls ``storage-init`` in as a dependency. A ``down`` without
+# ``--profile tools`` cannot see it: compose leaves the container -- and the
+# volumes it still holds -- behind, which is how validate_worker.ps1's
+# "nothing left behind" assertion failed in CI while the probe itself passed.
+# Adding the profile is always safe, so require it on every teardown.
+foreach ($scriptFile in $scriptFiles) {
+    # This file only *names* the ``down`` subcommand, inside the pattern two
+    # lines down, and never shells out to compose itself. Skip its own source or
+    # the needle matches the guard and the gate fails on itself.
+    if ($scriptFile.Name -eq 'validate_project_structure.ps1') {
+        continue
+    }
+    $scriptText = [System.IO.File]::ReadAllText($scriptFile.FullName, [System.Text.Encoding]::UTF8)
+    foreach ($match in [regex]::Matches($scriptText, "'down',")) {
+        $start = [Math]::Max(0, $match.Index - 240)
+        $length = [Math]::Min(480, $scriptText.Length - $start)
+        $window = $scriptText.Substring($start, $length)
+        if ($window -notmatch "'--profile',\s*'tools'") {
+            throw (
+                "$($scriptFile.Name) tears a compose project down without " +
+                '--profile tools. The one-shot services live in that profile, and ' +
+                'without it compose leaves their containers -- and the volumes they ' +
+                'hold -- behind for the next run to trip over.'
+            )
+        }
+    }
+}
+
 Write-Output "PROJECT_STRUCTURE_VALIDATION_OK files=$($requiredPaths.Count) directories=$($requiredDirectories.Count) node=$nodeTarget"
