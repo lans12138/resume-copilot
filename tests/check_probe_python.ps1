@@ -17,14 +17,24 @@ param()
 #
 # This script reproduces the runtime expansion for every embedded program and
 # asks CPython to parse the result, so both classes fail in the static gate
-# instead. CPython comes from the development image -- the same interpreter the
-# rest of ``verify`` uses -- so this adds no new host dependency.
+# instead.
+#
+# CPython comes from a digest-pinned public image rather than the locally built
+# development image. Two reasons:
+#
+#   1. ``verify`` runs this gate long before it builds anything, so a locally
+#      built tag only exists on a machine that has run a build before -- the
+#      gate passed locally and failed on a clean CI runner, where Docker tried
+#      to pull the tag from Docker Hub.
+#   2. Only CPython itself is needed here; the probes' own code is not on the
+#      path. The pin is the same 3.12.14 base the backend builds from, so the
+#      grammar under test matches the interpreter that will run the programs.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$developmentImage = 'resume-copilot-backend-development:local'
+$pythonImage = 'python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254'
 
 # Every probe that embeds Python has to be listed here; adding a probe without
 # adding it here would silently leave its embedded programs unchecked.
@@ -157,7 +167,7 @@ print(f'PROBE_PYTHON_OK programs={len(programs)}')
     $output = & docker @(
         'run', '--rm',
         '--volume', "${staging}:/probe:ro",
-        $developmentImage,
+        $pythonImage,
         'python', '/probe/check.py', '/probe'
     ) 2>&1
     if ($LASTEXITCODE -ne 0) {
