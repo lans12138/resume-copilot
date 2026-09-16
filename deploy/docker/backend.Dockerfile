@@ -18,6 +18,13 @@ COPY scripts ./scripts
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY pyproject.toml ./
+# The repository's design documents are part of the contract, not decoration:
+# tests/unit/test_fin009_adr_contract.py asserts that README and the design
+# documents still describe the self-built RunEngine, and it reads them relative
+# to the repo root. Without them the suite passes on a host checkout and fails
+# inside this image, which is the one place CI runs it.
+COPY docs ./docs
+COPY *.md ./
 
 CMD ["pytest", "-q"]
 

@@ -143,6 +143,17 @@ foreach ($migrationAsset in @('alembic.ini', 'migrations')) {
     }
 }
 
+# The design documents are test fixtures, not decoration: the FIN-009 ADR
+# contract test reads them relative to the repo root and asserts the docs still
+# describe the self-built RunEngine. They therefore have to be *inside* the
+# development image, because that image -- not a host checkout -- is where CI
+# runs pytest. Without this the suite is green locally and red in CI.
+foreach ($contractAsset in @('docs', '*.md')) {
+    if ($dockerfile -notmatch "(?m)^COPY $([regex]::Escape($contractAsset)) ") {
+        throw "The backend image must include the contract documents: $contractAsset"
+    }
+}
+
 # FIN-012: the web image is the public entry point, so its two properties that a
 # reviewer cannot see at runtime are pinned here — a fixed Node base for the
 # build stage, and a fixed Nginx base for the serve stage.
