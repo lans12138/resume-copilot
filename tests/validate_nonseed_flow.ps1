@@ -445,6 +445,6 @@ finally {
     # Always tear the project down, volumes included: the probe must not leave a
     # database behind that a later run could mistake for a seeded baseline.
     [void] (Invoke-Compose -Arguments @(
-        'down', '--volumes', '--remove-orphans', '--timeout', '15'
+        '--profile', 'tools', 'down', '--volumes', '--remove-orphans', '--timeout', '15'
     ))
 }

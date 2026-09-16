@@ -95,5 +95,5 @@ try {
     Write-Host 'FIN-007 evaluation integration tests passed.'
 }
 finally {
-    Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans')
+    Invoke-Compose -Arguments @('--profile', 'tools', 'down', '--volumes', '--remove-orphans')
 }

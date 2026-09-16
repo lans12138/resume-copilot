@@ -80,5 +80,5 @@ try {
     Write-Host 'FIN-001 idempotency PostgreSQL integration tests passed.'
 }
 finally {
-    Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans')
+    Invoke-Compose -Arguments @('--profile', 'tools', 'down', '--volumes', '--remove-orphans')
 }

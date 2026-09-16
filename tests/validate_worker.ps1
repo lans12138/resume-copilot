@@ -144,7 +144,7 @@ try {
     Write-Host 'FIN-002 worker/scheduler Redis integration probe passed.'
 }
 finally {
-    Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans', '--timeout', '15')
+    Invoke-Compose -Arguments @('--profile', 'tools', 'down', '--volumes', '--remove-orphans', '--timeout', '15')
 }
 
 if (@(Get-ProjectResources).Count -gt 0) {

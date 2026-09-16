@@ -99,5 +99,5 @@ try {
     Write-Host 'FIN-003 document pipeline end-to-end tests passed.'
 }
 finally {
-    Invoke-Compose -Arguments @('down', '--volumes', '--remove-orphans')
+    Invoke-Compose -Arguments @('--profile', 'tools', 'down', '--volumes', '--remove-orphans')
 }
