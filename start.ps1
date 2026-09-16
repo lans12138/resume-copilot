@@ -22,6 +22,12 @@ param(
     [string] $ProjectName = 'resume-copilot',
     [ValidateRange(1, 65535)]
     [int] $EntryPort = 8080,
+    [ValidateRange(0, 65535)]
+    [int] $ApiPort = 0,
+    [ValidateRange(0, 65535)]
+    [int] $PostgresPort = 0,
+    [ValidateRange(0, 65535)]
+    [int] $RedisPort = 0,
     [switch] $Fresh,
     [switch] $ResetDemo,
     [switch] $OpenBrowser
@@ -91,8 +97,16 @@ if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
     & $initializer -OutputPath $envPath
 }
 
-$previousEntryPort = $env:WEB_HOST_PORT
+$previousHostPorts = @{
+    WEB_HOST_PORT = $env:WEB_HOST_PORT
+    API_HOST_PORT = $env:API_HOST_PORT
+    POSTGRES_HOST_PORT = $env:POSTGRES_HOST_PORT
+    REDIS_HOST_PORT = $env:REDIS_HOST_PORT
+}
 $env:WEB_HOST_PORT = "$EntryPort"
+$env:API_HOST_PORT = "$ApiPort"
+$env:POSTGRES_HOST_PORT = "$PostgresPort"
+$env:REDIS_HOST_PORT = "$RedisPort"
 try {
     if ($Fresh) {
         Write-Host '[start] Removing this project stack and its volumes...'
@@ -135,6 +149,9 @@ try {
 
     Write-Output "DEMO_READY entry=$entryUrl mode=$mode"
     Write-Host 'Demo login: hr.demo / demo-password-123'
+    if ($ApiPort -eq 0 -or $PostgresPort -eq 0 -or $RedisPort -eq 0) {
+        Write-Host 'Debug ports were assigned automatically to avoid local port conflicts.'
+    }
     Write-Host "Stop without deleting data: docker compose --project-name $ProjectName stop"
 
     if ($OpenBrowser) {
@@ -142,10 +159,13 @@ try {
     }
 }
 finally {
-    if ($null -eq $previousEntryPort) {
-        Remove-Item Env:WEB_HOST_PORT -ErrorAction SilentlyContinue
-    }
-    else {
-        $env:WEB_HOST_PORT = $previousEntryPort
+    foreach ($variableName in $previousHostPorts.Keys) {
+        $previousValue = $previousHostPorts[$variableName]
+        if ($null -eq $previousValue) {
+            Remove-Item "Env:$variableName" -ErrorAction SilentlyContinue
+        }
+        else {
+            Set-Item "Env:$variableName" $previousValue
+        }
     }
 }

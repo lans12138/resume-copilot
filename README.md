@@ -87,7 +87,7 @@ flowchart TB
 #   入口：http://localhost:8080
 ```
 
-`start.cmd` 只对这一次进程绕过 PowerShell 执行策略，然后调用同目录的 `start.ps1`；不会修改机器的永久执行策略。启动器首次运行会自动生成 `.env`，默认保留已有容器卷和业务数据，重复运行是安全的。可选参数可直接透传，例如 `.\start.cmd -OpenBrowser`、`.\start.cmd -ResetDemo` 或 `.\start.cmd -Fresh`；`-Fresh` 与 `-ResetDemo` 不能同时使用。
+`start.cmd` 只对这一次进程绕过 PowerShell 执行策略，然后调用同目录的 `start.ps1`；不会修改机器的永久执行策略。启动器首次运行会自动生成 `.env`，默认保留已有容器卷和业务数据，重复运行是安全的。为避开本机已有开发服务，API、PostgreSQL 和 Redis 的宿主调试端口默认自动分配，公开入口仍固定为 `8080`；需要固定调试端口时可传 `-ApiPort 8000 -PostgresPort 5433 -RedisPort 6380`。其他可选参数可直接透传，例如 `.\start.cmd -OpenBrowser`、`.\start.cmd -ResetDemo` 或 `.\start.cmd -Fresh`；`-Fresh` 与 `-ResetDemo` 不能同时使用。
 
 底层的 `scripts/start_stack.ps1` 是全新环境验证脚本：它拒绝复用残留资源、把 seed 连跑两次验证幂等，并默认在验证后连卷拆除；需要直接使用时加 `-KeepRunning` 才会保留栈。
 
@@ -105,9 +105,9 @@ docker compose --profile tools run --rm seed
 | 入口 | 地址 | 说明 |
 |---|---|---|
 | 公开入口 | `http://localhost:8080` | Nginx 提供静态 SPA 并反代 `/api/`；`/healthz` 由 Nginx 自答 |
-| API 调试 | `http://127.0.0.1:8000` | 仅本地回环（`API_HOST_PORT` 可覆盖） |
-| PostgreSQL 调试 | `127.0.0.1:5433` | 仅本地回环 |
-| Redis 调试 | `127.0.0.1:6380` | 仅本地回环 |
+| API 调试 | `http://127.0.0.1:8000` | 直接运行 Compose 时的默认值；`start.cmd` 自动选择空闲端口，或用 `-ApiPort` 固定 |
+| PostgreSQL 调试 | `127.0.0.1:5433` | 直接运行 Compose 时的默认值；`start.cmd` 自动选择空闲端口，或用 `-PostgresPort` 固定 |
+| Redis 调试 | `127.0.0.1:6380` | 直接运行 Compose 时的默认值；`start.cmd` 自动选择空闲端口，或用 `-RedisPort` 固定 |
 
 演示账号由 `scripts/seed_demo_data.py` 写入，是**合成数据的固定凭据**（只对本地演示库有效，不含任何真实账号）：
 

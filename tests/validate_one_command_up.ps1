@@ -65,6 +65,8 @@ $launcherContracts = @{
     'delegates clean starts to the verified launcher' = 'scripts/start_stack\.ps1'
     'requires an explicit fresh switch before volume deletion' = 'if \(\$Fresh\)[\s\S]+?--volumes'
     'supports an explicit demo-data reset' = '\$ResetDemo[\s\S]+?--reset'
+    'avoids fixed debug-port conflicts by default' = '\[int\] \$ApiPort = 0[\s\S]+?\[int\] \$PostgresPort = 0[\s\S]+?\[int\] \$RedisPort = 0'
+    'overrides all Compose host ports for the launch' = 'API_HOST_PORT[\s\S]+?POSTGRES_HOST_PORT[\s\S]+?REDIS_HOST_PORT'
     'checks API readiness through the public entry' = '/api/v1/health/ready'
     'reports a stable ready marker' = 'DEMO_READY'
 }
