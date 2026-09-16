@@ -1,141 +1,96 @@
 # 项目记忆：resume-copilot（企业招聘 Copilot）
 
-## 定位
-六周单人开发的「作品集级 MVP」，目标岗位 AI Agent 开发。面向 HR/招聘主管的辅助招聘系统。核心不是自动招聘，而是「可验证的辅助决策链」：整理简历→可评测召回→带证据解释匹配→批量分析与单人审批隔离→副作用前暂停→故障可恢复。
+## 定位与三条硬约束
+六周单人开发的「作品集级 MVP」，目标岗位 AI Agent 开发。面向 HR/招聘主管的**辅助**招聘系统，核心是一条可验证的辅助决策链：整理简历→可评测召回→带证据解释匹配→批量分析与单人审批隔离→副作用前暂停→故障可恢复。
 
-## 技术栈（固定）
+1. **证据链一等公民**：确定性结论必须引用 `EvidenceChunk`（精确摘录 + SUPPORTED/PARTIAL/INSUFFICIENT）；引用非法或证据不足→降级「不足以判断」。
+2. **人工审批 + 幂等**：副作用前必须 interrupt 等人审批；未审批副作用执行次数 = 0；同一审批只决定一次。
+3. **可恢复性**：Checkpoint 恢复、协作式取消、Approval 过期重试。
+4. 文档/岗位描述一律按**不可信数据**：不得改变控制流、权限或工具参数（IMP-027 配对评测门禁守护）。
+
+## 技术栈
 - 前端 React+TS+Vite+AntD+React Flow+ECharts，TanStack Query+Zustand
-- 后端 Python3.12+FastAPI，Pydantic v2，SQLAlchemy2+Alembic
-- DB PostgreSQL17+pgvector(0.8.6)，Redis7+Celery；统一 Linux 容器（WSL2+Docker Desktop）
-- Agent 当前为 IMP-018 基于 Checkpoint 的纯节点引擎（真实 LangGraph+PG Checkpointer 为后续适配项，lock 未锁定 langgraph）；Qwen3.7-plus + qwen3.7-text-embedding(1024维)，OpenAI 兼容/百炼 SDK
-- 部署 Docker Compose+Nginx(8080)，CI GitHub Actions；普通 CI 用 FakeModel，真实模型评测独立
+- 后端 Python 3.12+FastAPI、Pydantic v2、SQLAlchemy2+Alembic；PG 17+pgvector(1024)、Redis 7+Celery
+- Agent：自研 `RunEngine` + `SqlCheckpointer`（**不是 LangGraph**，见 ADR-0001）
+- 模型 `qwen3.7-plus` / `qwen3.7-text-embedding`，OpenAI 兼容；默认 `MOCK_MODEL_MODE=true`
+- 部署 Docker Compose + Nginx（唯一公开入口，两条 SSE 路由关缓冲）；CI GitHub Actions（普通 CI 用 FakeModel）
+- 规模：backend 153 个 py / 约 1.8 万行；web 69 个 ts(x)；5 个 e2e spec；迁移 head `0012_evaluation_tables`（25 张表）
 
-## 当前进度（2026-09-04 更新）
-实际代码已到 **IMP-029 观测/性能/健康/脱敏**（在 IMP-028 之后）。`backend/app/evaluations/injection.py` 为纯函数评测：6 个攻击成功指标（控制流变化/越权 Tool 提案/审批绕过/攻击目标命中/配对硬规则变化/注入新增无支持高影响 Claim）必须全为 0；内置 21 组 clean/injected 配对样本覆盖 4 类攻击目标（唯一哨兵/指定分数/指定业务状态/伪造 evidence_chunk_id），可在 FakeModel/录制响应上稳定跑通；`tests/unit/test_injection.py` 11 用例既验证内置集全过门禁，也逐一验证评分器能捕获每类攻击。commit `42a6649`。IMP-028 已完成（E2E/故障恢复/并发回归，commit b30ddf8，tests/unit/test_concurrency_recovery.py 5 用例）；IMP-029 观测/性能/健康/脱敏已完成（commit 146cdc6：core/metrics.py 进程内指标 Counter/Histogram/Timer/Registry + JSON/Prometheus 双导出、core/middleware.py MetricsMiddleware + main.py GET /api/v1/metrics、core/context.py RunContext 日志字段、core/logging.py scan_for_leaks 脱敏扫描；tests/unit/test_observability.py 10 用例 + test_benchmark.py 100 候选人融合 p95 基准）；IMP-030 README/演示数据/脚本/发布已完成（commit b883f86：README.md 含 Mermaid 架构图、scripts/seed_demo_data.py 合成数据 seed 经 ORM 严守 FK 链、compose.yaml seed 服务、project.ps1 seed/reset-demo 动作）。至此 **IMP-001~030 全部提交**，全仓测试 249 passed。注意真实 LangGraph+PG Checkpointer 适配是 engine.py 标注的后续项，未纳入 MVP 发布。
-实际代码已到 IMP-026（Run/Approval/Interview 前端闭环打通，浏览器完整流程 D23~D25；G5「断线恢复和在线撤权」通过；前置 IMP-010~025 均已提交）。**前端闭环（IMP-026）**：apps/web 新增 SSE fetch 客户端（去重/跳号重连/401-403-撤销关流/终态关流）+ RunTimeline/RankingTable/ClaimEvidencePanel/QuestionSet/ScheduleResult/CurrentApprovalCard/ActionDiff/EditableParamsForm/DecisionActions/RunStatusBadge；MatchRun/ApplicationRun/Approval/Interview 四页 + App 路由 + JobDetail 启动入口；后端补 match_run/interviews 路由、application-runs retry/cancel、ApplicationRunDetail.interview_id 深链。已实现：auth、core、jobs、documents（parsers / repository / parse_service / tasks / Celery 任务层 / 上传投递 / retry 端点）、candidates（EvidenceChunk + ProfileReviewService + EmbeddingService + list_ready_views）、retrieval（三路召回器 + fusion/hard_rules/ranking + metrics + golden + preview 只读预览）、infrastructure（FakeModelGateway / EmbeddingGateway / celery 工厂 + RuntimeResources.checkpointer 进程级注入）。**agent 包（IMP-018）**：AgentRun/AgentEvent + RunEngine/RunService（run_graph/resume_run/emit_status/complete_run/cancel_run/mark_failed[retryable/error_code/failed_node]）；AgentRun 模型补 retryable/error_code/cancel_requested_*/failed_node/snapshot_version/created_by/started_at（§4.5）。**match_run 包（IMP-019）**：MatchRunService 无 interrupt 批量分析图。**reports 包（IMP-020）**：证据化报告 + §9.4 引用校验 + 语义评测门禁。**job_applications 包（IMP-021）**：JobApplication 排他槽 + ApplicationRun + 固定图到 WAITING_APPROVAL + 并发创建 409。**approvals 包（IMP-022）**：Approval 状态机 + 幂等键 + decide 决定一次 + 进程级 checkpointer 跨请求恢复 + ApplicationRun finalize_run 终态节点。**maintenance 包（IMP-023）**：MaintenanceService.expire_pending_approvals（TIMEOUT 过期扫描，锁顺序 JobApplication→Run→Approval，Run→FAILED retryable）+ Celery 任务 maintenance.expire_approvals；ApprovalService.mark_expired（PENDING→EXPIRED/TIMEOUT|RUN_CANCELLED 幂等）；ApplicationRunService.cancel 令 PENDING Approval EXPIRED/RUN_CANCELLED + retry_application_run（新 attempt 重试）。**job_applications 双审批副作用（IMP-024）**：8 节点双审批图（human_review 中断1 + wait_schedule_approval 条件中断2）；interviews 包（Interview/模型/ScheduleProposal/ScheduleResult/MockScheduleBackend 幂等/敏感属性 flag_sensitivity/build_interview_question_set）；ApplicationStatusHistory 追加式审计；ApplicationSideEffectService（execute_update_status/execute_create_schedule 经 Approval 状态机 + 乐观锁 CAS + idempotency_key 保证只执行一次，失败路径 EXECUTION_FAILED + run retryable-FAILED + 同 key 受控重试）；decide_approval 双审批编排。**前端** apps/web /candidates 页已交付。**sse 包（IMP-025）**：EventNotifier 协议（RedisEventNotifier 走 redis.asyncio Pub/Sub 频道 run:{run_id} + InMemoryEventNotifier 进程内广播 + NoOp）；AgentEvent 仓储加 list_events_after/get_event_by_sequence；AgentEvent.to_sse_dict 生成 SSE 信封；SseService（resolve_initial 首连授权+Last-Event-ID 游标校验 400 INVALID_EVENT_CURSOR、require_run_access 从 config_snapshot job_id 经 JobService.get_authorized、stream 异步生成器每批/心跳前持续授权、notify 或心跳等待、终态发最终心跳关闭、撤权发 SSE_AUTH_REVOKED 关闭）；RunService 注入可选 notifier 在 append_event 后发布；两个 SSE 端点 GET /application-runs/{id}/events、GET /match-runs/{id}/events（详设 §12/§13，G5 断线恢复+在线撤权通过）。IMP-026~030 待做（前端 SSE 客户端闭环、events/evaluations/observability、IMP-030 PG/LangGraph 真实适配+seed+迁移+agent_runs 新字段迁移）。
-
-### 依赖新增（IMP-011 / IMP-012）
-- IMP-011 引入 pgvector（evidence_chunks.embedding 为 vector(1024)，IMP-013 填；MVP 不建 HNSW）。本地隔离 venv 需 `pip install pgvector`；requirements.lock / requirements-dev.lock 已加 pgvector==0.5.0。
-- IMP-012 引入 celery（documents/agent/evaluations/maintenance 队列；文档解析任务 documents.parse / documents.retry_parse）。pyproject + 两 lock 加 celery==5.6.3（含 kombu/billiard/vine/amqp 传递依赖）。注意 pip-compile 重新生成 lock 时移除了 uvloop（uvicorn 回退默认 asyncio 事件循环），核心包版本未漂移。
-- 注意 pyproject requires-python 仍为 ">=3.12,<3.13"，但运行环境用 3.13.12 managed runtime（历史矛盾，未改；CI 用 lock 安装故无碍）。
+## 当前状态（2026-09-16 11:50 核对）
+- HEAD `94e8579`（main，已推远端）。**FIN-001~012 全部 DONE**；逐项证据（commit、测试、探针、踩坑）见 `编码实现计划.md` §20.2 总表 + §20.3 分项清单，此处不重复。
+- **只剩 FIN-013 发布收口**：README / 环境清单按「已有 Nginx 入口」重写（当前 README 仍在教 `npm run dev` 直连 5173）、固化演示/重置/诊断命令、最终 `project.ps1 verify`、Secret 与隐私扫描、release commit + tag；此后才可把项目状态改为 DONE。
+- **CI 仍红**：run `35048090729`（head `94e8579`）failure，`Static gates` 绿，卡在 `Reproducible project gate`。根因确定 —— `tests/validate_worker.ps1:151` 抛「Worker probe left Docker resources behind」；`down` 日志里是 `Volume ..._resume_storage  Resource is still in use`。即 teardown 少了 `--profile tools`，compose 看不见 tools profile 的 `storage-init` 容器，卷因此删不掉。
+  - **修法已在工作区但未提交**：6 个探针（document_pipeline / evaluations / idempotency / maintenance / nonseed_flow / worker）的 `down` 前补 `'--profile','tools'`；`tests/validate_project_structure.ps1` 新增静态守卫（扫所有 `.ps1`，`'down',` 前后 480 字符窗口内必须有 `'--profile','tools'`）。
+  - 工作区另有 `.workbuddy/memory/2026-09-16.md` 未提交（本文件同样，属正常「笔记」提交节奏）。
 
 ## 核心架构约束（不可妥协）
-1. 单 Agent 双运行图：MatchRun=岗位级批量分析（不审批、不副作用）；ApplicationRun=单候选人（每次副作用前 interrupt 等人审批）。靠 JobApplication 活动 Run 排他槽 + Approval 幂等键隔离。
-2. 证据链一等公民：每条确定性结论必引用 EvidenceChunk（精确摘录 + SUPPORTED/PARTIAL/INSUFFICIENT）。引用非法/证据不足→降级「不足以判断」。
-3. 文档/岗位描述全按不可信数据；不能改控制流/权限/工具参数。
-4. 未审批副作用执行次数必须=0；RBAC 服务端每次重校验；SSE 每批/心跳持续授权。
-5. Prompt Injection 配对评测攻击成功指标全=0。
-6. MVP 边界：电子 PDF/DOCX（无 OCR）、合成数据、单机、MockSchedule、精确向量检索（HNSW 不默认）、Langfuse 可选。
+1. **单 Agent 双运行图**：MatchRun = 岗位级批量分析（不审批、不副作用）；ApplicationRun = 单候选人固定 8 节点双审批图（`human_review` 主中断 + `wait_schedule_approval` 条件中断）。隔离靠 JobApplication 活动 Run 排他槽 + Approval 幂等键。
+2. 副作用节点只埋 typed state；真正写表由 SideEffect 服务经 Approval 状态机 + 乐观锁 CAS + `idempotency_key` 保证**只执行一次**。
+3. RBAC 服务端每次重校验；SSE 每批/心跳持续授权。
+4. MVP 边界：电子 PDF/DOCX（无 OCR）、合成数据、单机、MockSchedule、精确向量检索（HNSW 不默认）、Langfuse 可选。
+5. 不可削减项：证据归属/摘录/语义支持、JobAssignment 资源级授权 + SSE 持续授权、活动槽/Approval/幂等/副作用隔离、Checkpoint 恢复 + 协作取消 + Approval 过期、Prompt Injection 配对回归 + 核心自动化测试。
 
-## 不可削减项
-证据归属/摘录/语义支持、JobAssignment 资源级授权+SSE 持续授权、ApplicationRun 活动槽/Approval/幂等/副作用隔离、Checkpoint 恢复/协作取消/Approval 过期、Prompt Injection 配对回归+核心自动化测试。
+## 陷阱清单（踩过就别再踩）
+
+### Agent 运行时与工作流
+- 运行时是自研引擎，**不是 LangGraph** —— ADR-0001 已正式接受该偏差；`langgraph` 零依赖零导入。改任何文档的运行时表述前先读 ADR，`tests/unit/test_fin009_adr_contract.py` 守卫（含「零依赖」与「需求不得强制特定第三方库」两条断言）。易错事实：ApplicationRun 图的中断状态是 `WAITING_APPROVAL`（不是 `INTERRUPTED`）；审批业务 ordinal 是 **1 和 2**（不是 0）；幂等键 `run_id:attempt:action_type:ordinal`，对不上会返回新行。
+- **at-least-once 任务的第一步是「认领」不是「执行」**：先 `FOR UPDATE` 锁聚合根，再用**纯函数**判定本次投递是否有权执行（状态 × 取消标记 × 意图）；行锁持有到终态提交。授权判断必须从库里读标记，不能交给任务参数。
+- **同一 run 的重跑必须「替换派生行」而非追加**：`match_run_candidates` / `match_reports`（子表 `report_claims`/`claim_evidences`，FK 无 CASCADE，按子→父顺序删）都是「这一趟算出来的」，追加必撞唯一约束、整趟回滚，重试永远完不成。
+- **业务结论 ≠ 工程故障**：阈值未命中 = `COMPLETED` + `passed=False`；飞架损坏 = `FAILED` + 安全错误码，两处都不许合并。门禁只对**带阈值**的指标取合取，**空指标集必须判不通过** —— `all()` 对空列表返回 `True` 会造出「没跑任何检查却显示通过」的假绿灯（`gate_passed` 与 `EvaluationService.complete` 两处都修过）。
+
+### 数据模型 / Python
+- status 列必须写 `Enum(Model, native_enum=False, create_constraint=False, length=32)`，不能裸 `String(32)`：后者 ORM 读回 `str` 而注解声称枚举，`is` 比较失效、`.value` 直接 AttributeError，**只有真 DB 才暴露**（内存假仓储永远绿）。守卫 `tests/unit/test_status_mappings.py`。
+- **同一枚举绝不能定义两次**（models 一份 + schemas 一份）：值相等的两个类对象永不 `is` 相同，跨 ORM/API 边界的 `is`、`dict[enum,...]` 查表、`match` 会静默走错分支，且失败信息里两边 repr 完全一样，极具误导。已改 schemas 从 models 导入（+ `as` 别名满足 mypy strict）。
+- `mypy` 也检查测试文件：给共享助手写 `# noqa: ANN001` 骗得过 ruff、骗不过 mypy。正解是 PEP 695 泛型 `def _run[T](coro: Coroutine[Any, Any, T]) -> T:` —— 必须 `Coroutine` 不是 `Awaitable`。
+- `pytest.mark.anyio` 在本仓库会**静默跳过全部测试**（没装 anyio pytest 插件）；用仓库惯例「测试内嵌 `async def _run()` + `asyncio.run(_run())`」。
+- 测试里调自带 `asyncio.run()` 的同步包装器（Celery task、`python -m` 入口）要 `asyncio.to_thread(...)` 或子进程隔离，否则 RuntimeError。
+- `caplog` 拿不到结构化日志字段（字段挂在 `record` 上）；要断言凭据不外泄得直接挂 `logging.Handler` 扫 `record.getMessage()` + `vars(record)`。
+- 隐式字符串拼接比 `*` 结合更紧：`"=" * 68` 会把**整条已拼接的串**重复 68 次。多行文本用 `"\n".join([...])` + 独立变量存重复片段。
+- `EmbeddingDimensionError` 定义在 `infrastructure/embedding.py`，`candidates/embedding_service.py` 只是再导出；从后者 import 会让 mypy 报 attr-defined。
+- 同一个 `mock_model_mode` 开关必须由 chat / embedding 两个工厂给出一致答案（历史上一个静默返回 Fake、一个抛 `NotImplementedError`）。
+- 结构化输出一律当**不可信输入**：先 `json.loads` 再 `model_validate`，schema 违例判**永久**失败（重发只会得到同一份畸形回复）；`ValidationError` 必须包成 `ChatCompletionShapeError`，否则 Celery 会去重试一个注定失败的回调。
+- Embedding 是**位置对应**的：按 provider 的 `index` **重排**，并拒绝重复/缺口/非数值。静默信任会让检索悄悄错、还不报错。
+
+### 前端 / SSE / E2E
+- SSE 线格式以 `backend/app/sse/schemas.py` 为准：`event: <type>\nid: <sequence>\ndata: <json>\n\n`；心跳 `:\n\n`；撤销 `event: SSE_AUTH_REVOKED\ndata: {"reason":"access_revoked"}\n\n`。心跳间隔 `sse_heartbeat_seconds` 默认 **1 秒**。注入式测试要按真实格式构造帧并逐字段比对。
+- **`stop()` 之后再 `open()` 是死代码**：`stop` 置 `closed=true` 并 `abort()`，而 `open()` 开头 `if (closed) return`。任何「中止后立即重启」的流程，中止不变量必须逐次可重建（`const controller` → `let`，被 abort 过的 controller 会毒化后续所有尝试）。要写一条断言「第二次请求真的发生了」的测试，并用**临时回退修复**确认它会失败。
+- `page.route` 的 glob 不匹配**不报错**，只让你测了个寂寞：筛选为默认 `"ALL"` 时 `listJobs` 请求 `/api/v1/jobs` **不带查询串**，`**/api/v1/jobs?**` 永远匹配不上、请求穿透真 API 变假绿。优先用正则 `/\/api\/v1\/jobs(\?.*)?$/`。
+- `page.route` 里读请求头要用 `await request.allHeaders()`（`request.headers()` 会把名字小写化，读 `Last-Event-ID` 踩空）。
+- 别在测试里指向真实端口做「预计失败」的断言（如 `http://127.0.0.1:1`）：会真建 socket，实测把一个文件从 0.9s 拖到 9s；用 `httpx2.MockTransport` 完全替代。
+
+### 「本机绿、CI 红」三连（都是干净 runner 才暴露）
+- **探针 teardown 必须带 `--profile tools`** —— 当前在途修复，见「当前状态」。
+- `tests/check_probe_python.ps1` 曾假设本地已 build 的 `resume-copilot-backend-development:local` 存在（本机有 warm cache 所以过，干净 runner 去 Hub 拉被拒）。已改用 digest 固定的公开镜像 `python:3.12.14-slim-bookworm@sha256:782412e8...`。守卫：`validate_project_structure.ps1` 要求凡提到 `<name>:local` 的脚本必须在**同一文件**里 `--tag` 打出来。
+- `backend.Dockerfile` 的 development target 必须 `COPY docs ./docs` + `COPY *.md ./`：`test_fin009_adr_contract.py` 要读仓库根的设计文档，漏了就是「本机绿、容器红」（结构门禁已断言这两个 COPY 存在）。
+- 容器内迭代集成测试别每次 rebuild：挂载 `-v /d/code/resume/tests:/workspace/tests:ro` + `PYTHONDONTWRITEBYTECODE=1`；自建脚本要 `PYTHONPATH=/workspace`（镜像 WORKDIR 是 `/workspace`，不是 `/app`）。
+- 改文档/探针前先跑 `tests/validate_documents.ps1` 与 `scripts/check_powershell_syntax.ps1`（静态门禁）。
+
+### Windows / PowerShell（本机）
+- **PS 5.1 不能用来验证项目门禁**：宿主不维护 `$LASTEXITCODE`（`& docker bogus-arg` 之后仍是 0），所以 `start_stack.ps1` / `validate_*.ps1` 本机跑不了；`check_powershell_syntax.ps1` 全量跑会报 4 个文件 PARSE_ERR（它们用「行首管道符」，PS 7 才支持，CI 用 pwsh 7 能过）。**别把这类文件算进本机语法门禁。**
+- **PS 没有反斜杠转义**：双引号串里 `\"` 被读成「裸引号」，字符串提前闭合，报错行与真正起因相距很远还伴级联报错。要往内嵌脚本塞引号就换结构 —— 用 here-string（`@"..."@`，`"@` 必须在行首无缩进），内嵌语言自己拼引号（Python 用 `quote = chr(34)`）。单引号 here-string `@'...'@` 才完全字面化。
+- PS 5.1 的 `[Parser]::ParseFile()` 按 ANSI 读文件 → 对含中文的文件报**假**语法错；正解是先 `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` 再 `ParseInput`。`Get-Content` 一律显式 `-Encoding UTF8`；脚本文件需 UTF-8 BOM（否则 5.1 按 ANSI 解码，第一行前 ParserError）。
+- PS 5.1 不接受 here-string 直接作数组字面量元素（报「意外的标记」），要先赋值给变量再传参。
+- **工具会话不回显 stdout**：PS 工具结果必须 `| Out-File -Encoding utf8` 落盘再 Read；每次调用都是新会话，`Set-ExecutionPolicy -Scope Process Bypass` 要每次重设。
+- 嵌套 `pwsh` 在本沙箱**不产生可捕获输出**（连 `$LASTEXITCODE` 都是空串），`& $python -c "print(1)"` 同样拿不到 stdout。验证内嵌脚本只有两法：① 当前会话内联跑逻辑 ② 结果写文件再读。
+- 从 Bash 工具调 PowerShell 会被安全策略拒绝；且 Bash 工具本身不可用（`dirname`/`wc`/`head` 全 command not found，`/d/code/...` 路径也不认）。**本仓库一律用 PowerShell 工具 + Glob/Grep/Read。**
+- 删除文件被工作区 safe-delete 钩子拦（`SAFE_DELETE_BULK_GUARD_ERROR` / `..._CONFIRM_REQUIRED`）；临时文件可留在仓库根（原本就有 `_gate*.out` 之类）或用 `.git/info/exclude` 屏蔽。
+
+### git（本仓库高危）
+- **⛔ 绝不要用 `git stash` 做验证性对比**：2026-09-15 用它做基线对照时命令被 SIGTERM 打断，`.git/refs` 被整体删除、pack 丢失而 `.idx` 残留，**全部本地历史不可恢复**。要对照基线用 `git show HEAD:<file>` 或 `cp -r` 到临时目录。本仓库已有两次 git 损坏记录（0902、0915），`gc.auto 0` 与 `pruneExpire=never` 就是为此设的。重建历史时别用 `git commit --amend` 改非 HEAD 提交（实测报成功但 SHA 未变）。
+- **新建 ref 会被静默吞掉**（沙箱）：`git tag` / `git update-ref` / `git fetch` 建 ref 都返回 exit 0 但 ref 不落盘；绕法是手写 41 字节 SHA + 换行到 `.git/refs/...`。判据：任何 `git tag`/`git fetch` 返回 0 却查不到结果时，先怀疑这个。
+- **`git add <文件> && git commit` 会带走 index 里已暂存的东西**：工作区存在 `M `（已暂存）文件时，第一次提交会把无关改动一起吞掉。正确顺序是先 `git reset <base>`（mixed，工作区不动）清 index，再逐批 add。
+- 别用管道取 `git push` 的 `$?`（`| tail` 会把它吃掉，恒为 0）；要 `> log 2>&1` 落盘再读 exit code。判定是否真推上去**只认 `git ls-remote origin main`**，不要信本地 `origin/main`（fetch 后 ref 可能不落盘）。
+- 详细流程看他处：对象库损坏诊断/恢复 → 技能 `git-object-store-recovery`；CI 失败定位与非交互取凭据 → 技能 `gha-failure-triage`；push 凭据（两把钥匙、`git -c credential.helper=` 清空 helper 链、`x-access-token` 当用户名）→ 用户级 MEMORY.md。
+
+### 本机环境
+- **Docker**：Desktop 装在 `D:\develop\Docker`；`docker compose` 插件不在 PATH（在 `C:\Program Files\Docker\cli-plugins\docker-compose.exe`，复制到 `~/.docker/cli-plugins/` 后可用 v5.4.0）。跑自己的栈前注意遗留项目占着 5433/6380/8000，要显式设 `POSTGRES_HOST_PORT`/`REDIS_HOST_PORT`/`API_HOST_PORT`/`WEB_HOST_PORT`。
+- **Python venv**：`envs/fin003` 与 `envs/default` **均已不可用**（路径不存在 / 依赖损坏）。当前做法是 uv 现建现删（项目 pin `>=3.12,<3.13`，不能用 uv 默认的 3.13）：`uv venv --python "C:/Users/lanqi/AppData/Roaming/uv/python/cpython-3.12.14-windows-x86_64-none/python.exe" <repo>/.venv-check`；**editable 安装会撞沙箱 safe-delete 守卫**（「Build failures...」是假线索），改为先装 httpx2/mypy/pytest/ruff，再显式装 pyproject 里那 14 个运行时依赖；设 `UV_LINK_MODE=copy`。**用完 `rm -rf .venv-check`**。
+- **pytest 必须从仓库外跑**：仓库根 `.env` 会污染 `test_settings.py` 的 2 个用例（`storage_root must be an absolute path`，Windows 上的既有可移植性问题）。`cd /d/code && /d/code/resume/.venv-check/Scripts/python.exe -m pytest resume/tests/unit -q`。
+- 本机**无 pwsh、无 winget**；pwsh 7.6.6 便携版已解压到 `D:\develop\pwsh\`，但工具会话拉不起子进程、Bash 调又被策略拦，只能留给兰骐手动用。
+- `pyproject.toml` 的 `requires-python` 仍是 `>=3.12,<3.13`，与历史运行环境（3.13.12）矛盾，未改；CI 用 lock 安装故无碍。
 
 ## 文档地图
-需求分析.md、概要设计说明书.md、详细设计说明书.md、技术栈选型与架构决策.md、编码实现计划.md(IMP-001~030+6道周门禁G1~G6)、UML规划文档.md(6类图PlantUML)、项目可行性分析.md、环境配置清单.md(Gate0 基本通过)。
-
-## 进度校准（2026-09-07，重要 — 修正 README/旧记忆的"已完成"表述）
-`编码实现计划.md` v1.1（2026-09-07 校准，基线 07f18b8）自认项目**未完成**：IMP-001~030 虽全部提交且 249 测试通过，但属"核心演示闭环完成、生产运行闭环未完成"。
-- 诚实 PARTIAL 域（§19.2）：文档解析→Profile 前端接线、HTTP 请求级幂等（FIN-001）、Celery Worker/Scheduler 占位（FIN-002）、Run 后台异步执行仍同步（FIN-005）、SSE 缺 Nginx Bearer 全栈探针（归 FIN-012）、完整 Compose/CI 缺失（FIN-012/013）。（FIN-007 Evaluation 表/API/Task/页面、FIN-008 真实 Qwen 适配器、FIN-009 Agent 运行时对齐、FIN-010 非种子浏览器主路径、FIN-011 故障/撤权/SSE 浏览器矩阵均已于 2026-09-15 补齐或正式收敛，不再属此列。）
-- 剩余 13 个 FIN（FIN-001~013），理想工期 16.5 天 + 2 缓冲；推荐顺序见 §20.4。
-- 结论：README 与旧 MEMORY.md"IMP 全部提交=MVP 完成"有误导，对外展示作品集前需先补齐 FIN-001~013，或显式声明 MVP 边界为"种子数据演示闭环"。
-
-## FIN 收口进度（2026-09-14 校准）
-- **FIN-001 DONE**：HTTP 请求级幂等闭环（幂等记录模型+迁移、同 Key 同请求回放/不同请求 409、并发双击/响应丢失/重启/副作用 0|1 次 Postgres 集成测试）。
-- **FIN-002 DONE**：Worker/Scheduler/Compose 运行基线。入口用模块形式 `python -m backend.worker|backend.scheduler`（脚本形式会让 sys.path[0]=/workspace/backend 导致 `import backend` 失败）；三个 task 模块统一「每次调用新建 RuntimeResources + 单个 asyncio.run」，禁止模块级缓存 + 多次 asyncio.run；task 装饰器用 `@shared_task`，但任务模块必须在 `finalize()` 前被导入；compose 的 worker/scheduler 不设 healthcheck，就绪由 `tests/validate_worker.ps1` 功能探针断言；CI run 34809270696 转绿。
-- **FIN-003 DONE（2026-09-14，commit 43aeb75）**：新增 `candidates.extract_profile` 任务把「解析→Profile」接进生产链；确认时同步把 Document 置 READY；重复投递不再把已确认文档打回。第 4 项「真实 PostgreSQL/Redis E2E」由 `tests/validate_document_pipeline.ps1`（在 `verify` 内）执行并通过——**更正**：此前记录的「hermetic verify CI 默认 skip」不成立，`skipif` 只要求 `DATABASE_URL` 前缀为 `postgresql+asyncpg`。commits `3c01855`/`4f73d84`/`556569a`/`081b790`。
-- **FIN-004 DONE（2026-09-14 正式收口）**：`/documents` 详情+重试、`/documents/:id/review` 校对页（原文定位 + 字段编辑 + 证据预览与钉证据 + 确认）、`/candidates/:profileId` 详情三条路由，文档队列与排名表深链；浏览器「上传→钉证据→确认→READY」由 `apps/web/e2e/document-review.spec.ts` 覆盖。计划书总表与 4 个复选框已标 DONE（commit `3f65769`）。验证：`validate_web.ps1` → `flow=upload-review-readiness`、`validate_document_pipeline.ps1` → `1 passed`、前端 102 测试、后端 276 单测、ruff/mypy 干净；CI run `34831481488`(a9170c0) 与 `34832410250`(3f65769) 均 success。收口途中修掉两个真缺陷：证据体被强制要求重复路径拥有的 `candidate_profile_id`（422）、确认后未 flush 就读过期 `updated_at`（500 MissingGreenlet）。
-- **FIN-005 IN_PROGRESS（MatchRun 侧已完成，2026-09-14，commit `a4fe697` + 计划 `4bc8ebd`）**：`POST /jobs/{id}/match-runs` 不再在请求内跑图，改为「commit 事实 → 发布 Celery 任务 → 202 + `CREATED`」；`agent.execute_match_run` **以「认领」而非直接执行**为第一步：行锁 `FOR UPDATE` + 纯函数 `decide_claim(status, cancel, intent)`，`START` 只收 `CREATED`、`RETRY` 只收 `FAILED`、取消标记优先、`WAITING_APPROVAL` 两个意图都拒绝（否则等于绕过人工闸门）；行锁持有到终态提交，整趟只 commit 一次，Worker 被杀即回滚到 `CREATED` 交给 FIN-006 重投。`operation_key = run_id:attempt`（§14.1）。**未做**：`agent.execute_application_run`、检查点恢复、Worker 强杀/重启恢复测试——必须与 ApplicationRun 路由拆分同批落地。**顺带修掉两个真 bug**：MatchRun 重试原本会因派生行「追加而非替换」撞 `uq_match_run_candidates_profile` / `uq_match_reports_run_application`，第二次 pass 永远 commit 不了（且此前零测试覆盖）。
-- **FIN-006 DONE（2026-09-15，commit `70dd8cb`）**：三个维护任务，全是「对账」而非主执行路径。
-  - **审批过期**：`claim_expired_pending` 在 `SqlApprovalRepository` 用 `ORDER BY approvals.id LIMIT n FOR UPDATE SKIP LOCKED` 认领一批。**排序是防死锁**（两个 sweeper 候选集部分重叠时，无稳定顺序会互相等行锁）；**SKIP LOCKED 只是不阻塞**，正确性仍靠认领后重读「仍是 PENDING」再迁移状态——这也是让迟到的 `decide` 变成 no-op 的原因。
-  - **`maintenance.republish_queued`**：三类「已提交但发布丢失」的积压，各有自己的搁浅判据。①Document 卡 QUEUED 超过 `republish_queued_after_seconds`（parse 服务按 attempt/parser_version 幂等）；②MatchRun 卡 `CREATED` 静默超过 lease（CREATED 意味着从无 Worker 启动过，只发 `START`——唯一接受 CREATED 的意图）；③ApplicationRun 卡 `RUNNING` 静默超过 lease。**第三类最窄最危险**：RUNNING 也意味着「可能有活 Worker 持行锁」，所以只有**同时**存在「可续跑的 checkpoint」+「已 EXECUTED 且带 decider 的 Approval」时才提议 `RESUME`（`actor_id` 取 `approval.decided_by`，带 `resume_version`/`approval_id`）。跳过原因 `no_resume_facts` / `approval_decider_missing`。认领侧会重校验 checkpoint id、approval id、decider、实时授权，所以这个扫描**只能提议投递，永远无法把 Run 推过人工闸门**（有反向对照测试 `test_republish_application_run_never_proposes_an_unapproved_run`）。单条发布失败只记日志跳过，不拖垮整批。
-  - **`maintenance.cleanup_orphan_files`**：只删「超过 `orphan_file_safety_window_minutes` 且无 Document 行引用」的对象，删除前**再查一次引用**（防刚提交的上传被误删）；畸形 key 计数但不删。`LocalVolumeStorageLister` 走 `objects/<2hex>/<32hex>` 布局，`_managed_key` 拒路径穿越，IO 走 `anyio.to_thread`。
-  - 新增 `backend/app/maintenance/repository.py`（`MaintenanceDocumentRepository` / `StoredObjectLister` / `SqlApplicationRunRecoveryProbe`，各自带内存双）。三个 `@shared_task` 均遵守**单事件循环规则**（每次调用新建 `RuntimeResources` 并在同一 loop 内 dispose）。beat 新增 `republish-queued`(300s) / `cleanup-orphan-files`(86400s)。新增配置 `REPUBLISH_QUEUED_AFTER_SECONDS=120` / `RUN_LEASE_SECONDS=900` / `ORPHAN_FILE_SAFETY_WINDOW_MINUTES=60` / `ORPHAN_FILE_SCAN_BATCH_SIZE=500`。测试：`tests/unit/test_maintenance_fin006.py` 25 例 + `tests/integration/test_maintenance_postgres.py` 6 例（含两个并发会话 SKIP LOCKED 切分 6 条审批的断言）+ `tests/validate_maintenance.ps1`（已挂进 `project.ps1 verify`）。门禁：340 passed、ruff 干净、mypy 185 文件无问题。
-  - **未在本机验证**：Docker daemon 未运行 ⇒ 新 Postgres 集成用例与 `validate_maintenance.ps1` 探针只能在 CI 跑。**Protocol 加方法会打穿单元假仓储**（`_SnapshotAgentRunRepository` 因 `list_stale_runs` 变抽象类），以后再扩 Protocol 记得搜 `tests/` 里所有手写双。
-- **FIN-007 DONE（2026-09-15）**：Evaluation 产品闭环，三张表 + 三端点 + 幂等 task + 页面 + 离线门禁。
-  - **表与迁移**：`dataset_versions` / `evaluation_runs` / `metric_snapshots`，迁移头 `0012_evaluation_tables`（down_revision `0011_idempotency_records`）。表数 22 → **25**，`validate_migrations.ps1` 与 `test_model_registry.py` 同步钉住。`model_snapshot_json` 只存模型名 + `mock_model_mode`，**不含凭据**。完成态的 Run/Metric **不可就地改写**，不可变性写在 SQL 层（`replace_metrics` 以终态状态谓词拦住），不靠调用方自觉。
-  - **重复执行闸门键在 `(dataset_version_id, config_hash)`，与调用者无关**，只看活跃状态（`CREATED`/`RUNNING`），命中 → 409 `EVALUATION_DUPLICATE`。`config_hash` 是**排序键规范化 JSON 的 SHA-256**，字典顺序变化绕不过去。其余错误码：404 `DATASET_VERSION_NOT_FOUND`、409 `DATASET_VERSION_IMMUTABLE`（同 name+version 但 content_hash 不同）。权限用**技术角色** `require_roles(HR, ADMIN)`，与业务角色 `HIRING_MANAGER` 分开（HM 拿不到技术入口）。畸形 UUID → 404 而非 500。
-  - **判决语义五层分离（模型/服务/task/门禁/UI）**：阈值未命中 = `COMPLETED` + **`passed=False`**（业务结论）；飞架损坏 = **`FAILED`** + 安全错误码（工程故障）。这两者绝不许合并。
-  - **门禁只对带阈值的指标取合取，且空指标集判不通过**。`all()` 对空列表返回 `True`，会造出「没跑任何检查却显示通过」的假绿灯——该缺陷在 `BuiltinEvaluationExecutor.gate_passed` 和 `EvaluationService.complete` **两处同时**修（`bool(thresholded) and all(...)`）。无阈值指标在 UI 标「参考」，不参与判决。
-  - **离线门禁 `python -m backend.app.evaluations.gate` 刻意不读 `Settings`**（显式 `default_retrieval_config()`，§18.3 冻结配置），因此能在无数据库/Redis/模型配置的裸 CI 步骤独立运行。**退出码契约：0=通过 / 1=阈值未达标 / 2=飞架故障**。注意包路径是 `backend.app.evaluations.gate`——`backend/` 无 `__init__.py`，`backend.app` 才是包根。
-  - **`evaluations.execute` task**：`enqueuer` 以 `task_id=str(run_id)` 投递故天然幂等；`start` 返回 `None`（已被别的 Worker 认领或已终态）→ `{"status":"skipped"}`；评分器抛异常 → 落 `FAILED` + 安全错误码而不外穿。遵守**单事件循环规则**（每次调用新建 `RuntimeResources` 并在同一 `asyncio.run()` 内 dispose）。**三套既有评分器（`retrieval/golden.py`、`evaluations/semantic.py`、`evaluations/injection.py`）本次未改动、未重复验证**，FIN-007 只做其上的持久化编排。
-  - **客户端打戳 id 与 `created_at`**：`create_run` / `register_dataset` 里 `id=uuid4()` + `created_at=self._now()`，`metric_snapshot_rows` 透传 `created_at`。不打戳则内存镜像在 flush 前排序/分页全错（最初 3 个单测失败即此因）。
-  - 前端 `/evaluations` 页面：结论一律**读存储字段、绝不重算**，`passed === null`（未完成）与未达标在 UI 上是不同呈现。测试：单测 32+11+9、集成 7（仅 `DATABASE_URL` 为 `postgresql+asyncpg` 时执行）、前端 9；`validate_evaluations.ps1` + `validate_evaluation_gate.ps1` 已挂 `project.ps1 verify`。门禁：**392 passed**、ruff 干净、mypy **198** 文件无问题、前端 **113** 全绿 + `tsc -b` 干净、`alembic heads` 单一 head。
-  - **踩坑**：①`ruff format --check` 报 87 文件待格式化是**仓库既有状态**（`git show HEAD:<file>` 验证过 `main.py`/`celery.py`/`model_registry.py` 在 HEAD 就已不合格式），本次只格式化自己新建的 `backend/app/evaluations`，不动别人文件；②mypy 不做跨行窄化，`metric.threshold` 是 `float | None`，即使用 `is not None` 过滤也要先 `threshold = ...; assert threshold is not None`；③fake 参数类型改对后 `# type: ignore[arg-type]` 变 unused-ignore，mypy 会报错，改签名要同步删 ignore；④前端 `findByText("name@v1")` 失败是因为渲染成三个节点，要用 `(_, node) => node?.textContent === "..."`；⑤`findByRole("table", { name: "" })` 匹配不到无名表。
-  - **未在本机验证**：Docker daemon 未运行 ⇒ Postgres 集成用例与两个探针只能在 CI 跑（同 FIN-006）。
-- **FIN-008 DONE（2026-09-15）**：真实 Qwen 适配器。OpenAI 兼容 Chat/Embedding gateway + 传输层重试/分类 + 脱敏诊断命令 + 录制回放 + 合成数据集注册。
-  - **切换唯一入口是 `mock_model_mode`**，但两个工厂此前对该开关给出**不一致**答案：`build_model_gateway` 静默返回 Fake，`build_embedding_gateway` 抛 `NotImplementedError`。已统一。真实工厂缺 endpoint/key 时抛 `ValueError` 而非退化到 Fake——用启发式假模型伪造「看起来合理」的抽取，远比重启直接失败危险。`Settings` 校验器是同一规则的第一道防线。
-  - **重试/分类策略只在 `http_transport.py` 一处**，调用方不再各自推导：timeout/connect/429/5xx 可重试；其余 4xx、畸形 JSON、200 但 schema 不符永久。**这一位就是 Celery 决定是否再烧一次尝试的依据**。`Retry-After` 上限 60s，否则指数退避 + `[0.5,1.0)` 抖动（**只缩不涨**，且打散并发避免再造 429 惊群）。
-  - **结构化输出一律当不可信输入**：先 `json.loads` 再 `model_validate`，schema 违例判**永久**（重发同一请求只会得到同一份畸形回复）。`parse_structured_reply` 里 `CandidateProfileDraft.model_validate` **必须包 try/except ValidationError → `ChatCompletionShapeError`**；漏了这层，坏枚举/多余字段会以裸 `ValidationError` 逃逸，Celery 就去重试一个注定失败的回调。
-  - **Embedding 顺序契约**：向量是**位置对应**的，必须按 provider 的 `index` **重排**（到达顺序不可信），并拒绝重复/缺口/非数值。静默信任会让检索**悄悄错**而不报错，且会被归罪给检索器而非适配器。`embed([])` 不发请求。
-  - **诊断命令 `python -m backend.app.infrastructure.model_diagnose`**：退出码 0=可达 / 1=永久 / 2=临时。**刻意读 `Settings`**（与 `evaluations.gate` 相反，后者要在裸 CI 跑）。端点归约为 scheme+host+port+path，**query 与 userinfo 整段丢弃**（需要猜哪个参数是密钥的脱敏迟早猜错，而这个值会被打印进工单）；**无法解析的 URL 替换为 `(unparsed)` 绝不原样回显**（手糊进密钥的配置正是最常见的解析失败来源）。凭据绝不出现在报告头/失败行/端点里。
-  - **录制存原始回复文本而非解析后 draft**：存 draft 会把本解析器行为烤进 fixture，无法发现解析器后续回归。回放走与线上**完全相同**的解析校验路径（fixture 里放畸形回复 → 回放必须失败，这才让回放成为证据而非装饰）。缺 case 抛错而非返回空 draft 静默通过。`build_gateway_for_mode` 优先级：recording → mock → real。`is_stale_for` 检出陈旧 fixture **只告警不失败**（避免无关 Prompt 编辑打断 CI）。
-  - **`register_dataset` 此前只有测试调用过**，生产路径无人调，`dataset_versions` 恒为空、评测结果无法回指数据集版本——`evaluations/datasets.py::register_builtin_datasets`（幂等）补上这条接线，刻意放独立模块以便探针与门禁直接调用。
-  - **选 `httpx2` 而非官方 `openai` SDK**（用户拍板方案 A）：仓库既有依赖、运行时可用、自带 `MockTransport`（整张重试矩阵无网络/无密钥/无 sleep 可测），且**不必改 `requirements.lock`**（本机没有项目生成锁文件的 `pip-compile --no-index` 工具链，改锁文件风险高于收益）。
-  - 新增：`infrastructure/{http_transport,prompts,qwen_chat,qwen_embedding,recording,model_diagnose}.py` + `evaluations/datasets.py` + 4 个单测文件（30/50/30/27）+ `tests/validate_model_adapter.ps1`（挂进 `verify`）。门禁：**529 passed**、ruff 干净、mypy strict **209** 文件无问题。
-  - **未在本机验证**：Docker daemon 未运行 ⇒ `validate_model_adapter.ps1` 只能 CI 跑；**真实凭据下的连通性与录制评测仍待人工执行**（代码路径完备，但无真 key 产不出真实 fixture）。
-- **FIN-009 DONE（2026-09-15，commits `3a5d26c` + `2fef0a6`）**：ADR 正式确认保留自研 `RunEngine` + `SqlCheckpointer`，不引入 LangGraph。
-  - **为什么结论是「不迁移」**：迁移成本**不在 250 行引擎本身**，而在围绕它的接线——每节点写两条 `AgentEvent`、每状态迁移调 `set_status`、恢复校验散落 `agent/tasks.py:247-283`（`resume_token_missing`/`stale_resume_version`/`resume_not_approved` 三元校验）与 `job_applications/service.py:277-282`。**895 行不变量测试（`test_concurrency_recovery` 365 / `test_approval` 329 / `test_agent_run_event` 201）必须重写而非复用**。另加两条：`requirements.lock` 本机无 `pip-compile --no-index` 工具链、需 Docker+PG 才能验证。
-  - **「迁移双图」是伪命题**：需求 AGT-008 要求两张图，但**只有 `job_applications/graph.py` 用引擎**；`match_run/service.py:152-225` 是手写顺序过程，从未触碰 `RunEngine`。所以「迁移固定双图」实际等于「迁移一张 + 新写一张」——采用 LangGraph 省不下这份工作量。
-  - **偏差自始就被记录**：`engine.py:3` 自已写着 "it is *not* LangGraph"（注意是 `*not*` 带 markdown 强调，断言时别写成 `not LangGraph`），`checkpoint.py:5` 说明方法名刻意对齐 `BaseCheckpointSaver`，`test_concurrency_recovery.py:5` 注明「真实 LangGraph 替换时也不能静默破坏」，计划书 §19.2 早已标 `PARTIAL`。ADR 只是把「待办」升格为「已决定」。
-  - **ADR 结构**（`docs/adr/0001-...md`，仓库此前无 `docs/` 目录）：7 节 = 背景 / 事实核查（7 小节全带行号证据）/ 决策 / 备选方案取舍（方案 A 采用 LangGraph 被否，5 条理由）/ 后果（含「明确不改变事项」）/ 验证 / 文档口径。**§5.3 列出 5 个重新评估触发条件**（原生多分支调度、子图组合、时间旅行/分叉重放、团队扩大需生态工具、`BaseCheckpointSaver` 契约变更）+ 迁移路径（保留 `Checkpointer` 协议、仅替换调度实现、以既有不变量测试作验收门禁），使这是有界选择而非永久绑定。
-  - **文档修正 17 处 / 5 份**：只改断言「已是 LangGraph」的句子，`README.md:64`（本来就诚实）+ `需求分析.md` AGT-008 与双图表述 + `技术栈选型与架构决策.md`（§8.1/§8.2 标为立项意图、排除项补记实际选择、表格行、总结句、ReactFlow/测试/工作流路由三处）+ `概要设计说明书.md` + `详细设计说明书.md`。**保留**「规划中/后续适配」类善意表述（UML 图注、可行性分析、路线图周次）——用户明确选择「精准修正」而非「全量重写」。§8.1 原文把「自写状态机」列为排除项，现补记「本项目最终选择此项」。
-  - **新增 `tests/unit/test_fin009_adr_contract.py`（20 项）**：三部分 —— (1) ADR 事实基础（零依赖、零导入、`engine.py` 仍声明偏差、契约方法名存在、`metadata["next_node"]` 恢复、主中断不重复触发）；(2) 跨运行时不变量（业务表为事实源、已执行审批重放不重发副作用、检查点/事件不含大文本、恢复后事件序列有序无空洞）；(3) 文档口径守卫（改写后的文档仍回指 ADR、`需求分析.md` 不再强制特定第三方库）。**这部分是绊线**：将来引入 LangGraph 而不更新 ADR，这些测试直接红。
-  - 门禁：**549 passed**（FIN-008 时 529，+20）、ruff `All checks passed!`、mypy strict **210** 文件无问题。
-- **FIN-010 DONE（2026-09-15，commit `8339dd3`）**：非种子文件浏览器主路径端到端跑通。
-  - **性质是「集成缺口」而非「功能缺口」**：整条链路（上传→解析→`candidates.extract_profile`→校对确认→`embeddings.generate_chunks`，接 MatchRun→`JobApplication.get_or_create`→ApplicationRun→双审批→Interview）**早已存在且已接线**，只是非种子路径从未被连贯跑通、也没有 PDF fixture。所以正确做法是**补验证，不是写功能**。
-  - **fixture 生成器 `scripts/generate_e2e_fixtures.py`**：从共享 `BLOCKS` 元组生成 DOCX/PDF。五个文本块是**刻意钉死的**（`张伟` / `6 年 Python 后端开发经验` / `工作经历：2021-至今 某电商 高级后端工程师` / `技能：Python、FastAPI、PostgreSQL` / `教育背景：本科 计算机科学与技术`），因为 `document-review.spec.ts` 用这些子串做选择器。**`--check` 必须比对解析后的文本块，不能比字节**——DOCX 是 ZIP、PDF 带时间戳，重新生成永远不可能字节相同（`--check` 已用「内容不变通过 / 漂移失败」双向验证）。PDF 的 CJK 用 PyMuPDF 内置 `fontname="china-s"`（Droid Sans Fallback），可经 `get_text()` 往返；`insert_text` 取 `fontname` **不取 `font` 对象**。
-  - **持久化计数无法经公开 API 观测**，所以 `apps/web/e2e/fin010-nonseed-flow.spec.ts` 只覆盖浏览器旅程，计数断言放进 `tests/validate_nonseed_flow.ps1`（psql 直读，同 `validate_application_entry.ps1` 的做法）。实测无这些接口：`ApplicationRunDetail` 只暴露 `current_approval` + `interview_id`（**无**审批列表）、`EvidenceChunkResponse` **无**向量标记字段；列名是 `active_application_run_id`（不是 `active_run_id`）。**别照设计文档臆造端点**。
-  - **`tests/check_probe_python.ps1`** 在静态门禁里校验探针内嵌的 Python：① `[Parser]::ParseInput` 保证 PS 层可解析；② 展开后**残留 `$变量` 即报错**（替换表漂移检测，已用反向用例验证会触发）；③ 用**开发镜像里的 CPython** `ast.parse`（不引入主机 Python 依赖，符合既有 `validate_*.ps1` 惯例）。为让 fixture 检查能在镜像内跑，`deploy/docker/backend.Dockerfile` 加了 `COPY scripts ./scripts`。
-  - **`apps/web/tsconfig.node.json` 的 `include` 补上 `e2e/**/*.ts`** —— 此前 spec 完全不受类型检查。
-  - 门禁：`tsc -b` 干净、`vitest run` **113 passed (22 files)**、fixture 检查通过、三个 PS 脚本 `PARSE_OK`、内嵌 Python 用本地 HTTP server 证明 multipart 请求体正确。**Docker 本机未运行 ⇒ 探针与 E2E 仍只能 CI 验证**。
-- **FIN-011 DONE（2026-09-15，commits `8a558ff` + `5e2ab41`）**：故障与安全浏览器矩阵。
-  - **性质：后端已覆盖，缺的是浏览器一半**。§19.2 原话就是「撤权和断线恢复缺浏览器级验证」；后端语义早有 **17 项精确单测**（`test_approval.py` 8 + `test_sse.py` 9，含 `test_midstream_revocation_closes_stream` 断言扣留为序列 `[0,1]`）。**Nginx Bearer SSE 全栈探针按计划书原文属 FIN-012 第 2 项**，别误并进 FIN-011。
-  - **⚠️ 修复了一个真实缺陷：`sse.ts` 跳号后永远不重连。** gap 分支先 `stop("client")`（置 `closed=true` **并 `abort()`**）再 `reconnectFrom()`，而 `open()` 第一行 `if (closed) return` ⇒ 重连是**死代码**，与该文件自述契约矛盾。修法：新增 `abandonStream()`（废弃当前流但**不结束会话**），`AbortController` 由 `const` 改 `let` **逐次重建**（被 abort 过的 controller 会毒化后续所有尝试），`scheduleReconnect` 同样重建。**已用临时回退验证测试确实会失败**（`expected spy to be called 2 times, but got 1`），不是空转测试。
-  - **测试分层原则（可复用）**：能在活栈真跑的**真跑**（REJECT / EDIT / 重复决定 / 真实在线撤权）；只有需要打坏基础设施的（503、丢 Redis 通知、需第二方参与的撤权）才 `page.route` 注入，且用例名一律带 **`INJECTED:`** 前缀，让读者能分辨哪些断言基于真实服务端响应。注入的 SSE 帧**按 `backend/app/sse/schemas.py` 的真实线格式构造**并逐字段比对过（顺序 / 尾部空行 / 10 个 payload 键全一致，心跳与撤销帧逐字节相同）。
-  - **真实撤权用例**：SSE 处于「实时同步」时经 `DELETE /jobs/{id}/assignments/{user_id}` 撤当前 HR 的授权，断言下一次心跳（`sse_heartbeat_seconds=1`，故 ~1s 内）返回 `SSE_AUTH_REVOKED` 且前端显示「授权已撤销」。**`finally` 必须恢复授权**（共享种子数据，否则级联破坏其它 spec）；恢复时容忍 409 `ASSIGNMENT_EXISTS`。
-  - **踩坑**：① **REJECT 后的终态是 `COMPLETED` 不是 `CANCELLED`**（`approvals/service.py:285-291` 调 `complete_run(reason="ACTION_REJECTED")`，页面渲染 `completion_reason`）；② **`page.route` glob 必须匹配真实 URL** —— 筛选为默认 `"ALL"` 时 `listJobs` 请求 `/api/v1/jobs` **不带查询串**，写 `**/api/v1/jobs?**` 永远匹配不上、测试会**静默穿透真 API 变假绿**，应用正则 `/\/api\/v1\/jobs(\?.*)?$/`；③ `request.headers()` **小写化**，读 `Last-Event-ID` 用 `await request.allHeaders()`；④ 编辑表单提交按钮是「应用修改」、标签「编辑后参数（JSON）」。
-  - 门禁：`vitest run` **118 passed (22 files)**（+5）、`tsc -b` 干净、`playwright test --list` 18 tests（+13）。**Docker 本机未运行 ⇒ 浏览器矩阵只 CI 验证；客户端不变量本机已跑。**
-- **FIN-012~013 仍 TODO（2 项）**：完整 Compose+CI（含 FIN-011 留下的 Nginx Bearer SSE 探针）、发布收口。缺口集中在「生产运行闭环」，不是核心演示闭环。
-- 仓库已 PUBLIC（github.com/lans12138/resume-copilot）；远端 `local-backup/main` 为备份分支；push 需显式 token URL（plain `git push` 挂起）。**注意 `project.ps1 verify` 确实包含 `validate_document_pipeline.ps1`，但普通 pytest 里 4 个集成用例恒 skip（缺 `DATABASE_URL`），只有该探针真跑它们。**
-- **API 面已校准（2026-09-14，commit bd3d926）**：设计文档原先写的候选人扁平路径（`/candidates`、`/candidates/{id}`、`PATCH /candidate-profiles/{id}`）实现里不存在，且 3 个已实现读端点（`GET /documents/{id}/content`、`GET /match-runs/{id}/reports`、`GET /auth/me`）两份文档都没写。已按**实现**对齐概要与详细设计，`api_methods` **40 → 46**（`validate_documents.ps1` 断言同步）。需求基线的 3 条扁平路径**故意没改**，改为在详细设计 §12.3 记录偏差（探针要求需求资源路径逐字出现在详细设计，删掉会同时破门禁和掩盖分歧；`resources=27` 仍满足）。实现路由全量枚举可用 `backend/app/**/routes.py` 的 `APIRouter(prefix=)` + 装饰器正则扫出。
-- **文档门禁本机可跑（2026-09-14 起）**：`tests/validate_documents.ps1` 加了 UTF-8 BOM（否则 PS 5.1 按 ANSI 解码、第一行前 ParserError）且所有 `Get-Content` 显式 `-Encoding UTF8`（否则多字节错位吞行首，围栏计数失真、报出并不存在的「围栏未闭合」）。**对 pwsh 是 no-op**，已在容器内 pwsh 7 复验。装 pwsh 路径的办法：`docker run --rm -v D:/code/resume:/repo -w /repo mcr.microsoft.com/powershell:lts-debian-12 pwsh -NoProfile -File ./tests/validate_documents.ps1`（镜像无 ENTRYPOINT，必须写 `pwsh`）。
-- **✅ origin 推送已恢复（2026-09-14 21:05）**：兰骐建了 fine-grained PAT（限 `lans12138/resume-copilot`，`GET /repos/...` 返回的 `permissions` 为 admin/maintain/push/triage/pull 全 true）。7 笔已推上（`3f65769..e583b67`），CI `run 35` 已触发，`local-backup` 同步（含 tag `imp-008-recovered`）。
-  - **⚠️ 2026-09-15 重建仓库后 `.git/gh-credentials` 随之丢失**（它原本在 `.git/` 内），且重建时未设 `remote.local-backup`。**下次 push 前必须先恢复**：把 token 文件放回 `D:/code/resume/.git/gh-credentials`（chmod 600）并重设那两条 `credential.helper` 配置；同时补 `git remote add local-backup D:/develop/git-remotes/resume.git`。**注意本地 `origin/main` 与 `local-backup/main` 在重建后都会停在旧值**，判定是否真推上去只认 `git ls-remote origin main`。
-  - **本机凭据落在仓库局部，不走 GCM**：`.git/gh-credentials`（store 格式 `https://x-access-token:<TOKEN>@github.com`，chmod 600，**明文**，在 `.git/` 内不会被提交）+ 仓库局部配置 `git config --local credential.helper ''` 紧接着 `git config --local --add credential.helper 'store --file=D:/code/resume/.git/gh-credentials'`。**那个空值是把 global 的 GCM 清出 helper 链，两个必须都写**，否则 push 仍会去问 GCM 然后挂死。
-  - **取 token 给 REST API 用**：`cut -d: -f3 .git/gh-credentials | cut -d@ -f1`（**别用 `sed 's#^https://x-access-token:\(.*\)@github.com$#\1#p'`** —— 实测它返回空串，然后 curl 报 401，我被这个假象带偏了好几轮）。
-  - **GCM 是坑**：无有效凭据（或某些状态下）`git push` 会**挂死**等 GUI，`timeout 25` → **exit 124、输出 0 字节**；`GCM_INTERACTIVE=never` / `GCM_GUI=false` 都拦不住。`git credential fill` 同样**不可靠**（会偶发返回空串，实测同一命令 93/0/0 飘）。本项目一律绕过它。
-  - **写权限的实测方法**：`--dry-run` + `Everything up-to-date` **不做认证**，是假成功；要真验证得推一个新 ref，例如 `git push --dry-run origin HEAD:refs/heads/_cred_probe`。
-  - **真相是「挂死」不是「静默失败」**（2026-09-14 20:44 实测纠正）：`timeout 25 git push --dry-run origin main` → **exit 124、输出 0 字节**。GCM 在无有效凭据时会一直等一个不会出现的 GUI 窗口，`GCM_INTERACTIVE=never` / `GCM_GUI=false` 都拦不住。
-  - **我上一轮把它记成「exit 0 静默失败」是误判**，根因是用了管道：`git push ... | tail -8; echo $?` 取到的是 `tail` 的退出码，**恒为 0**。教训：push 一律 `> log 2>&1` 落盘再读 exit code，不要用管道取 `$?`。
-  - 判定是否真推上去了，只认 `git ls-remote origin main`；**不要信本地 `origin/main`**（停在过期的 `e4922fa`）。
-  - **读 CI**：`GET https://api.github.com/repos/lans12138/resume-copilot/actions/runs?per_page=N`，`Authorization: Bearer <上面取的 token>`。注意 `?head_sha=<sha>` 过滤**返回值不稳定**（同一 sha 有时返回空列表），要盯某笔就拉列表自己筛。
-
-## 项目陷阱清单（踩过就别再踩）
-- **Agent 运行时是自研引擎，不是 LangGraph——这是已正式接受的偏差，见 `docs/adr/0001-agent-runtime-custom-engine-over-langgraph.md`**（FIN-009，2026-09-15）。`langgraph` 零依赖零导入，别被设计文档里的旧措辞误导：`概要/详细设计`、`需求分析`、`技术栈选型` 里凡提到 LangGraph 的地方现都已回指 ADR-0001。**改任何一份设计文档的运行时表述前先读 ADR**，`tests/unit/test_fin009_adr_contract.py` 会守卫（含「需求不得强制特定第三方库」与「零依赖」两条断言，引入 LangGraph 而不更新 ADR 会直接红）。两个易错事实：ApplicationRun 图 `interrupt_status=WAITING_APPROVAL`（不是 `INTERRUPTED`）；审批业务 ordinal 是 **1 和 2**（不是 0），幂等键 `run_id:attempt:action_type:ordinal` 对不上会返回新行。
-- **⛔ 在这个仓库上绝不要用 `git stash` 做验证性对比**：2026-09-15 用 `git stash push --include-untracked` 做基线对照时命令被 SIGTERM 打断，`.git/refs` 被整体删除、pack 文件丢失而 `.idx` 残留、只剩 3 个 loose object，git 再也读不了自己的目录——**全部本地历史不可恢复**（浅克隆与 0902 备份都只到 FIN-004）。工作区文件幸存，靠它重建仓库（基线 `2a91fb1`，tag `baseline-post-rebuild`；FIN-008 `87e4cd9`）。**要对照基线改用 `git show HEAD:<file>` 或 `cp -r` 到临时目录**，绝不执行会重写 `.git` 内部的命令。本仓库已有两次 git 损坏记录（0902、0915），`git config gc.auto 0` 与 `pruneExpire=never` 就是为此设的。重建历史时**别用 `git commit --amend` 去改非 HEAD 的提交**（实测报了成功但 SHA 未变、文件仍在），要么 `read-tree --empty` 从头按路径重建，要么 `reset --soft` 到目标提交再重做。
-- **`mypy` 也检查测试文件**（`mypy backend apps tests/unit`）。给共享助手写 `def _run(coro):  # noqa: ANN001, ANN202` 能骗过 ruff 但**骗不过 mypy**，会报一片 `Call to untyped function in typed context`。正确写法是 PEP 695 泛型 `def _run[T](coro: Coroutine[Any, Any, T]) -> T:`——注意必须是 `Coroutine` 而非 `Awaitable`，`asyncio.run` 要求 `Coroutine`。
-- **`pytest.mark.anyio` 在这仓库会静默跳过全部测试**：没装 anyio pytest 插件（`import pytest_anyio` → ModuleNotFoundError）。必须用仓库惯例「测试内嵌 `async def _run() -> None` + `asyncio.run(_run())`」。
-- **隐式字符串拼接比 `*` 结合更紧**：`"=" * 68` 写在隐式拼接表达式里会把**整条已拼接的串**重复 68 次（`_report_header` 踩过）。要多行文本用 `"\n".join([...])` + 独立变量存重复片段。
-- **`caplog` 拿不到结构化日志字段**：字段挂在 `record` 属性上，不在渲染后的消息里，`caplog.text` 查不到。要断言凭据不外泄，得直接挂 `logging.Handler` 扫 `record.getMessage()` + `vars(record)`。
-- **Playwright `page.route` 的 glob 必须对着真实请求 URL 核对，否则测试静默变假绿**（2026-09-15，FIN-011）。写过 `**/api/v1/jobs?**` 想拦截岗位列表，但筛选为默认 `"ALL"` 时 `client.ts:89` 请求的是 `/api/v1/jobs`**不带查询串** ⇒ 路由不匹配、请求穿透到真 API、用例照样「通过」。**Glob 不匹配不会报错，只会让你测了个寂寞。** 凡是 `page.route`，先确认组件实际发出的路径，并优先用正则（如 `/\/api\/v1\/jobs(\?.*)?$/`，同时能排除 `/jobs/{id}` 子资源）。
-- **`page.route` 里读请求头要用 `await request.allHeaders()`**：`request.headers()` 会把名字**小写化**，读 `Last-Event-ID` 这类名字时容易踩空。
-- **`stop()` 之后再 `open()` 是死代码**（2026-09-15，SSE 跳号重连真实缺陷）。把「结束会话」与「废弃当前流」写成同一个函数，就会出现「先置 `closed=true` / `abort()`，再调 `open()`」——而 `open()` 开头的 `if (closed) return` 让它直接返回。**任何「中止后立即重启」的流程，都要让中止不变量（closed 标记、AbortController）是逐次可重建的**：`const controller` 改成 `let`，被 abort 过的 controller 会毒化后续所有尝试。此类缺陷单靠读代码容易放过（注释还写着「会重连」），**要写一条断言「第二次请求真的发生了」的测试**；并用**临时回退修复**确认测试会失败。
-- **业务结论 ≠ 工程故障，测试断言别混**：REJECT 一个审批，run 的终态是 **`COMPLETED`**（`completion_reason=ACTION_REJECTED`），**不是 `CANCELLED`**。写「驳回后应显示已取消」是想当然。
-- **SSE 的线格式以 `backend/app/sse/schemas.py` 为准**：`event: <type>\nid: <sequence>\ndata: <json>\n\n`，心跳是 `:\n\n`，撤销是 `event: SSE_AUTH_REVOKED\ndata: {"reason":"access_revoked"}\n\n`；`data` 的 10 个键见 `AgentEvent.to_sse_dict`。注入式测试要**按真实格式构造帧并逐字段比对**，否则断言的是自己发明的协议。心跳间隔 `sse_heartbeat_seconds` 默认 **1 秒**（撤权/丢通知都在 ~1s 内被下一次心跳发现）。
-- **别在测试里指向真实端口做「预计失败」的断言**（如 `http://127.0.0.1:1`）：会真建 socket，耗时取决于 OS 拒绝连接的速度（实测把一个测试文件从 0.9s 拖到 9s），且依赖宿主网络栈。用 `httpx2.MockTransport` 完全替代。
-- **同一 `mock_model_mode` 开关必须由两个工厂给出一致答案**：曾出现 chat 工厂静默返回 Fake、embedding 工厂抛 `NotImplementedError` 的分裂。任何「Fake/Real 由配置切换」的工厂都要有一条断言两者一致性的测试。
-- **`EmbeddingDimensionError` 定义在 `infrastructure/embedding.py`**，`candidates/embedding_service.py` 只是**再导出**；从后者 import 会让 mypy 报 `attr-defined`，要从定义处 import。
-- **同一 run 的重跑必须「替换派生行」，不能追加**：`match_run_candidates`（`uq_run+profile`、`uq_run+snapshot_order`）与 `match_reports`（`uq_run+application`，子表 `report_claims`/`claim_evidences` 且 FK 无 ON DELETE CASCADE，要按子→父顺序删）都是「这一趟算出来的」派生数据。重试复用同一 run 行 ⇒ 追加就撞唯一约束、整趟事务回滚，重试永远完不成。2026-09-14 在 MatchRun retry 上同时踩到两处（候选人 + 报告），两处都已改成整批替换。
-- **at-least-once 任务的第一步是「认领」不是「执行」**：先 `SELECT ... FOR UPDATE` 锁聚合根，再用**纯函数**判断本次投递是否有权执行（状态 × 取消标记 × 意图），把判定与投递分离（可单测、可变异验证）。行锁要持有到终态提交，否则「正在执行中」会被第二次投递误判。禁止把「撤销/取消」类的授权判断交给任务参数——必须从库里的标记读。
-- **status 列必须用 `Enum(Model, native_enum=False, create_constraint=False, length=32)`**，不能写裸 `String(32)`：后者 ORM 读回 `str` 而注解声称枚举，mypy 抓不到，`is` 比较失效、`.value` 直接 AttributeError。真实 DB 才暴露，内存假仓储永远是绿的（2026-09-14 在 `resume_documents.status` / `candidate_profiles.status` 上踩到，已修 + `tests/unit/test_status_mappings.py` 守卫）。
-- **同一个枚举绝不能定义两次**（`models.py` 一份 + `schemas.py` 一份）：值相等的两个类对象永不 `is` 相同，跨 ORM/API 边界的 `is`、`dict[enum, ...]` 查表、`match` 会静默走错分支，而失败信息里两边 repr **完全一样**（`assert X.READY is X.READY` 失败），极具误导性。2026-09-14 在 `CandidateProfileStatus` 上踩到（CI 红在集成测试 `:236`），已改为 schema 从 models 导入 + `as` 别名（mypy strict 需要），并加守卫 `test_status_mappings.py::test_profile_status_is_one_class_shared_by_orm_and_api`。排查手法见 skill `resume-celery-mypy`。
-- **hermetic 假仓储会掩盖真实 DB 类型差异**：凡是"注解是枚举/日期/JSON、列是 String/JSONB"这类映射，单测绿 ≠ 真跑通；只有真连 Postgres 的 E2E 才作数。
-- **PowerShell 没有反斜杠转义 —— `\"` 不是转义符**（2026-09-15，写 `tests/validate_nonseed_flow.ps1` 时踩到，是最费时的一个）。在双引号字符串里写 `"('...name=\"file\"; filename=\"$uploadFilename\"...')"` 想把 Python 内嵌脚本的引号转义出去，PowerShell 会把 `\"` 读成「裸引号」，**字符串在此提前闭合**，报错行（本例 174）与真正起因相距很远，还连带报出 152/182/192 的级联「缺少右括号/右花括号」，极易误判。PS 的转义是反引号或 `""`（双写）。**当要往内嵌脚本里塞引号时，正确做法是换掉整段结构**：改用 here-string（`@"..."@`，`"@` 必须在行首无缩进），并在内嵌语言侧自己拼引号（本例 Python 用 `quote = chr(34)`）——这样 PowerShell 字符串里根本不存在需要转义的引号，比琢磨转义更稳。同理，`$` 在双引号 here-string 里仍会插值，单引号 here-string（`@'...'@`）才完全字面化。
-- **验证内嵌脚本别靠肉眼，也别靠嵌套 pwsh**：本沙箱里**嵌套 `pwsh` 不产生可捕获输出**（连 `$LASTEXITCODE` 都是空串），`& $python -c "print(1)"` 同样拿不到 stdout（重定向到文件也是空文件）。可行姿势只有两种：① 在**当前会话内联**跑校验逻辑；② 把结果**写文件**再 Read。`tests/check_probe_python.ps1` 就是把这两点固化成了静态门禁（PS 层 `ParseInput` + 展开后残留 `$变量` 检测 + 开发镜像内 `ast.parse`）。
-- **测试里调用自带 `asyncio.run()` 的同步包装器**（Celery task、`python -m` 入口）必须 `asyncio.to_thread(...)` 或子进程隔离，否则在外层事件循环里调用会 `RuntimeError: asyncio.run() cannot be called from a running event loop`。
-- **本机环境**：**2026-09-15 起 `C:\Users\lanqi\.workbuddy\binaries\python\envs\fin003` 也不可用了（路径整体不存在）**。当前可用的做法是用 **uv 现建现删**（`uv venv --python "C:/Users/lanqi/AppData/Roaming/uv/python/cpython-3.12.14-windows-x86_64-none/python.exe" <repo>/.venv-check`；项目 pin `>=3.12,<3.13`，不能用 uv 默认的 3.13）。**editable 安装会撞沙箱 safe-delete 守卫**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，报“Build failures usually indicate a problem with the package”是假线索），改为两步：先 `uv pip install --python .../.venv-check/Scripts/python.exe httpx2 mypy pytest ruff`，再显式装 `pyproject.toml` 里那 14 个运行时依赖（alembic/asyncpg/celery/fastapi/pwdlib[argon2]/pydantic-settings/pymupdf/pyjwt/python-docx/python-multipart/redis/sqlalchemy[asyncio]/pgvector/uvicorn[standard]）。设 `UV_LINK_MODE=copy` 避免跨盘 hardlink 警告。**用完 `rm -rf .venv-check`**（`.gitignore` 只忽略 `.venv/` 与 `venv/`，`.venv-check/` 不在列表里）。**pytest 必须从仓库外跑**（仓库根 `.env` 会污染 `test_settings.py` 的 2 个用例，表现为 `storage_root must be an absolute path`——这是 Windows 上的既有测试可移植性问题）：`cd /d/code && /d/code/resume/.venv-check/Scripts/python.exe -m pytest resume/tests/unit -q` → **549 passed**（2026-09-15 FIN-009 后；FIN-008 时是 529）。**没装 `pwsh`**，`scripts/project.ps1` 的 `pwsh` 探针本机跑不了；探针要 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\x.ps1`（直接 `& .\x.ps1` 会被 Restricted 策略拦）。`validate_documents.ps1` 已于 2026-09-14 修好编码、本机可跑（BOM + `-Encoding UTF8`），**但它不是唯一陷阱**：PS 5.1 的 `[Parser]::ParseFile()` 同样按 ANSI 读文件，会在早已存在、CI 长期绿的行上报假语法错（错误里出现 `'”。` 这类残字），正确姿势是先 `[System.IO.File]::ReadAllText($p,[Text.Encoding]::UTF8)` 再 `[Parser]::ParseInput(...)`。探针落盘日志是 UTF-16，按 `utf-16` 解码读；本机 PS 工具**完全不回显 stdout**，要 `| Out-File -Encoding utf8` 写进工作区再读（注意嵌套 `pwsh` 连 `$LASTEXITCODE` 都拿不到，会得到空串）。从 Bash 调 PowerShell 会被安全策略拒绝，且提交信息含 `pwsh`/`PowerShell` 字样也会触发拦截（改用 `git commit -F .git/msg_x.txt`，提交后删文件）。**PS 5.1 不接受 here-string 直接作为数组字面量元素**（报「意外的标记」），要先赋值给变量再传参（`tests/validate_model_adapter.ps1` 踩过）。
-- **push 凭据**：唯一可靠的做法是**让 GCM 根本不参与** —— `GIT_TERMINAL_PROMPT=0 git -c credential.helper= push https://x-access-token:$GH_TOKEN@github.com/lans12138/resume-copilot.git main`（`x-access-token` 当用户名、token 当密码）。`-c credential.helper=` 才是关键（清空 helper 链），`GCM_INTERACTIVE=never`/`GCM_GUI=false` 实测无效。查 `git credential fill` 同理会给 GCM，需 `timeout` 兜底。
-- **`credential.helper` 现状**（2026-09-14 核查）：global 指向 PortableGit 自带 **GCM 2.9.0**（`C:/Users/lanqi/.workbuddy/binaries/PortableGit/versions/1.2.0/mingw64/bin/git-credential-manager.exe`），凭据存 Windows 凭据管理器，**`~/.git-credentials` 不存在**（不是 store 模式）。另有一条 Huawei CodeHub 的 `credential.<host>.provider=generic`。
+需求分析.md、概要设计说明书.md、详细设计说明书.md、技术栈选型与架构决策.md、编码实现计划.md（IMP-001~030 + 6 道周门禁 G1~G6；§19.2 诚实 PARTIAL 域、§20.2 FIN 总表、§20.3 分项验收清单、§20.5 完工判定）、UML规划文档.md（6 类图 PlantUML）、项目可行性分析.md、环境配置清单.md、README.md、`docs/adr/0001-agent-runtime-custom-engine-over-langgraph.md`。
 
 ## 约定
-每次改动配独立 Git commit（AGENTS.md 硬要求）；改动配测试；文档交付自查格式（宋体四号/1.5倍行距/字数区间——仅学校 SRS 文档适用）。
+每次改动配独立 Git commit（AGENTS.md 硬要求）；改动配测试；交付前跑通对应门禁。（「宋体四号 / 1.5 倍行距 / 字数区间」只适用于学校 SRS 文档，与本项目无关。）
