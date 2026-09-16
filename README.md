@@ -208,7 +208,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 |---|---|
 | IMP-001 ~ IMP-030（工程骨架到发布） | ✅ 全部提交 |
 | FIN-001 ~ FIN-012（幂等、Worker 基线、文档闭环、前端闭环、异步恢复、维护任务、评测、真实适配器、运行时 ADR、非种子主路径、故障矩阵、完整 Compose 与 CI） | ✅ 全部 DONE，逐项证据见 [`编码实现计划.md`](./编码实现计划.md) §20.2 / §20.3 |
-| FIN-013 发布收口 | 🚧 本次发布提交：README 与环境清单校准、最终 `verify`、Secret/隐私扫描、release commit + tag |
+| FIN-013 发布收口 | ✅ 全部 DONE：README 与环境清单校准、CI run 35066318081 全绿（含 `project.ps1 verify` 全量）、Secret/隐私扫描与依赖审计干净、`ONE_COMMAND_UP_VALIDATION_OK` / `API_RUNTIME_VALIDATION_OK` / `NGINX_PROXY_VALIDATION_OK`、release commit + `v1.0.0` tag |
 
 ## MVP 边界
 
