@@ -100,11 +100,29 @@ if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
 }
 # A placeholder left in place produces an app that boots and then rejects every
 # login, so it is checked here where the message is actionable.
+#
+# Only the variables the default configuration actually dereferences are
+# blocking. In mock mode the model endpoint and key are never read, and Langfuse
+# is off, so their template placeholders are inert -- and ``env-init`` leaves
+# exactly those three in place, which means blocking on them would make the
+# documented path ("copy the example, replace the secrets, run this script")
+# impossible to follow.
 $envText = Get-Content -LiteralPath $envPath -Raw
-if ($envText -match 'replace-with-[a-z-]+') {
-    $leaked = [regex]::Matches($envText, '(?m)^([A-Z_]+)=replace-with-[a-z-]+') |
+$blockingPlaceholders = @('JWT_SECRET', 'POSTGRES_PASSWORD', 'DATABASE_URL')
+$placeholderVariables = @(
+    [regex]::Matches($envText, '(?m)^([A-Z_]+)=replace-with-[a-z-]+') |
         ForEach-Object { $_.Groups[1].Value }
-    throw "These variables still hold their .env.example placeholders: $($leaked -join ', ')"
+)
+$blocking = @($placeholderVariables | Where-Object { $blockingPlaceholders -contains $_ })
+if ($blocking.Count -gt 0) {
+    throw "These variables still hold their .env.example placeholders: $($blocking -join ', ')"
+}
+$inert = @($placeholderVariables | Where-Object { $blockingPlaceholders -notcontains $_ })
+if ($inert.Count -gt 0) {
+    Write-Host (
+        "      note: $($inert -join ', ') still hold template placeholders; they are " +
+        'unused while MOCK_MODEL_MODE stays true and LANGFUSE_ENABLED stays false.'
+    )
 }
 
 function Get-EnvValue {

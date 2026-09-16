@@ -49,7 +49,50 @@ try {
         throw 'Forced initialization did not rotate generated secrets.'
     }
 
-    Write-Output 'LOCAL_ENV_VALIDATION_OK jwt_bytes=48 database_password_bytes=24 overwrite=guarded output=redacted'
+    # The documented fresh-clone path is "copy the example, replace the secrets,
+    # run scripts/start_stack.ps1". That script refuses to start while a
+    # *blocking* variable still holds a template placeholder, so the file this
+    # initializer produces has to satisfy it.
+    #
+    # The two agreed only by accident before: the guard rejected every
+    # placeholder, while the initializer deliberately leaves the inert
+    # model/Langfuse ones in place -- so the documented path could not be
+    # followed at all, and no gate noticed because the one-command probe writes
+    # its own synthetic environment instead of using a generated one.
+    $startStack = Get-Content -Encoding UTF8 -Raw -LiteralPath (
+        Join-Path $repoRoot 'scripts\start_stack.ps1'
+    )
+    $blockingDeclaration = [regex]::Match(
+        $startStack,
+        '(?ms)\$blockingPlaceholders\s*=\s*@\((.*?)\)'
+    )
+    if (-not $blockingDeclaration.Success) {
+        throw 'start_stack.ps1 no longer declares $blockingPlaceholders; update this contract.'
+    }
+    $blockingVariables = @(
+        [regex]::Matches($blockingDeclaration.Groups[1].Value, "'([A-Z_]+)'") |
+            ForEach-Object { $_.Groups[1].Value }
+    )
+    if ($blockingVariables.Count -eq 0) {
+        throw 'start_stack.ps1 declares an empty placeholder blocklist.'
+    }
+    $leftoverPlaceholders = @(
+        [regex]::Matches($content, '(?m)^([A-Z_]+)=replace-with-[a-z-]+') |
+            ForEach-Object { $_.Groups[1].Value }
+    )
+    $blockedLeftovers = @($leftoverPlaceholders | Where-Object { $blockingVariables -contains $_ })
+    if ($blockedLeftovers.Count -gt 0) {
+        throw (
+            'The generated environment still holds placeholders that ' +
+            "scripts/start_stack.ps1 refuses to start with: $($blockedLeftovers -join ', ')"
+        )
+    }
+
+    Write-Output (
+        'LOCAL_ENV_VALIDATION_OK jwt_bytes=48 database_password_bytes=24 ' +
+        'overwrite=guarded output=redacted ' +
+        "start_stack_blocking=$($blockingVariables.Count) inert_leftovers=$($leftoverPlaceholders.Count)"
+    )
 }
 finally {
     if (Test-Path -LiteralPath $testRoot) {

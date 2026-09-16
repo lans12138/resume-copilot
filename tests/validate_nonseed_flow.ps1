@@ -177,7 +177,7 @@ data = open('/tmp/$uploadFilename', 'rb').read()
 quote = chr(34)
 parts = [
     ('--' + boundary + '\r\n').encode(),
-    ('Content-Disposition: form-data; name=' + quote + 'file' + quote +
+    ('Content-Disposition: form-data; name=' + quote + 'files' + quote +
      '; filename=' + quote + '$uploadFilename' + quote + '\r\n').encode(),
     ('Content-Type: $mediaType\r\n\r\n').encode(),
     data,
