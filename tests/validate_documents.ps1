@@ -72,6 +72,7 @@ $overview = Read-RepositoryDocument '概要设计说明书.md'
 $detailedDesign = Read-RepositoryDocument '详细设计说明书.md'
 $implementationPlan = Read-RepositoryDocument '编码实现计划.md'
 $environmentChecklist = Read-RepositoryDocument '环境配置清单.md'
+$demoScript = Read-RepositoryDocument '演示脚本.md'
 
 $requirementDefinitions = [regex]::Matches(
     $requirements,
@@ -293,6 +294,24 @@ $missingEnvironmentContracts = @(
 )
 Assert-Condition ($missingEnvironmentContracts.Count -eq 0) "环境清单缺少关键契约：$($missingEnvironmentContracts -join ', ')"
 
+$requiredDemoContracts = @(
+    'docker compose --profile tools down --volumes --remove-orphans',
+    'apps/web/e2e/fixtures/e2e-candidate-resume.pdf',
+    '"status":"ready"',
+    '启动批量分析',
+    '启动单人流程',
+    '写操作岗位',
+    '业务等效的 exactly-once',
+    '只重建 DEMO 标记的数据',
+    '现场状态速查'
+)
+$missingDemoContracts = @(
+    $requiredDemoContracts | Where-Object { -not $demoScript.Contains($_) }
+)
+Assert-Condition ($missingDemoContracts.Count -eq 0) "演示脚本缺少现场契约：$($missingDemoContracts -join ', ')"
+Assert-Condition (-not $demoScript.Contains('残留数据也不怕')) '演示脚本错误宣称一键启动允许残留 Compose 资源。'
+Assert-Condition (-not $demoScript.Contains('期望 {"status":"ok"}')) '演示脚本仍把 readiness 状态写成 ok。'
+
 Write-Output (
     'DOCUMENT_VALIDATION_OK ' +
     "markdown=$($markdownFiles.Count) " +
@@ -307,5 +326,6 @@ Write-Output (
     "plan_contracts=$($requiredPlanContracts.Count) " +
     "environment_sections=$($environmentSectionMatches.Count) " +
     "environment_variables=$($requiredEnvironmentVariables.Count) " +
-    "environment_contracts=$($requiredEnvironmentContracts.Count)"
+    "environment_contracts=$($requiredEnvironmentContracts.Count) " +
+    "demo_contracts=$($requiredDemoContracts.Count)"
 )
