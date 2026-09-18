@@ -28,10 +28,14 @@ function ClaimCard({ claim }: { claim: ClaimOut }) {
         {claim.confidence_note ? <span className="badge badge-muted">{claim.confidence_note}</span> : null}
       </div>
       {claim.evidences.length === 0 ? (
-        <p className="muted">该结论暂无关联证据摘录。</p>
+        // PORT-002: a claim with no excerpt is a downgrade, not a rendering gap —
+        // say so, or "部分支持" next to an empty list reads like a missing row.
+        <p className="muted">
+          未在候选人原文中定位到支持该结论的片段，支持等级已相应下调。
+        </p>
       ) : (
         claim.evidences.map((ev) => (
-          <blockquote className="evidence" key={ev.evidence_chunk_id}>
+          <blockquote className="evidence" key={`${ev.evidence_chunk_id}-${ev.quote_start}`}>
             “{ev.quote_text}”
           </blockquote>
         ))
@@ -54,7 +58,11 @@ export function ClaimEvidencePanel({ reports }: { reports: ReportList }) {
               <p className="eyebrow">Candidate report</p>
               <h2>候选人 <code>{report.candidate_profile_id.slice(0, 8)}</code></h2>
             </div>
-            <span>综合评分 {report.overall_score.toFixed(2)} · {report.recommendation}</span>
+            {/* PORT-002: name the score for what it is — a ranking conversion, not
+                a model confidence. The backend summary spells this out too. */}
+            <span>
+              检索排序换算分 {report.overall_score.toFixed(2)}（非模型置信度） · {report.recommendation}
+            </span>
           </div>
           <p className="description-text">{report.summary}</p>
           <h3>结论与证据</h3>

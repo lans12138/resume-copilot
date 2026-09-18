@@ -19,6 +19,7 @@ from uuid import UUID, uuid4
 from backend.app.agent.models import AgentRun
 from backend.app.candidates.models import EvidenceChunk
 from backend.app.match_run.models import MatchRun, MatchRunCandidate, ProcessingStatus
+from backend.app.reports.evidence_binding import bind_evidence, merge_evidence
 from backend.app.reports.models import (
     ClaimEvidence,
     ClaimView,
@@ -34,7 +35,7 @@ from backend.app.reports.validation import (
     apply_high_impact_guard,
     verify_evidence_reference,
 )
-from backend.app.retrieval.models import HardRuleOutcome
+from backend.app.retrieval.models import HardRuleId, HardRuleOutcome
 
 
 class EvidenceProvider(Protocol):
@@ -84,10 +85,32 @@ def _score_and_recommendation(
     return round(overall_score, 2), recommendation
 
 
-def _support_for(outcome: HardRuleOutcome) -> SupportLevel:
-    if outcome == HardRuleOutcome.PASS:
+def _support_for(outcome: HardRuleOutcome, *, has_evidence: bool) -> SupportLevel:
+    """Derive support from the evidence actually found, never from the verdict alone.
+
+    A rule that PASSes on confirmed profile fields is not automatically
+    SUPPORTED: if nothing in the resume text states the value it rests on, the
+    claim is only PARTIAL. Treating the verdict itself as proof is exactly what
+    let an unrelated first chunk pass for evidence (PORT-002).
+    """
+    if outcome == HardRuleOutcome.UNKNOWN:
+        return SupportLevel.INSUFFICIENT
+    return SupportLevel.SUPPORTED if has_evidence else SupportLevel.PARTIAL
+
+
+def _overall_support(
+    outcome: HardRuleOutcome, rule_supports: list[SupportLevel]
+) -> SupportLevel:
+    """The aggregate claim is only as strong as the individual rules behind it."""
+    if outcome == HardRuleOutcome.UNKNOWN:
+        return SupportLevel.INSUFFICIENT
+    if not rule_supports:
+        # An aggregate-only snapshot records no per-rule detail, so there is
+        # nothing to cite for it: the verdict stands, the support is partial.
+        return SupportLevel.PARTIAL
+    if all(level == SupportLevel.SUPPORTED for level in rule_supports):
         return SupportLevel.SUPPORTED
-    return SupportLevel.INSUFFICIENT
+    return SupportLevel.PARTIAL
 
 
 def _impact_for(outcome: HardRuleOutcome) -> ImpactLevel:
@@ -95,15 +118,52 @@ def _impact_for(outcome: HardRuleOutcome) -> ImpactLevel:
     return ImpactLevel.HIGH if outcome == HardRuleOutcome.FAIL else ImpactLevel.MEDIUM
 
 
-def _quote_evidence(chunk: EvidenceChunk, claim_id: UUID) -> ClaimEvidence:
-    """Cite the whole chunk verbatim — a legal, owned reference by construction."""
-    return ClaimEvidence(
-        id=uuid4(),
+def _rule_claim_text(
+    outcome: HardRuleOutcome, rule_id: str, observed: object, required: object
+) -> str:
+    """Wording must match the verdict: FAIL is a decision, UNKNOWN is an absence."""
+    if outcome == HardRuleOutcome.PASS:
+        return f"满足{rule_id}（观测值 {observed}，要求 {required}）"
+    if outcome == HardRuleOutcome.FAIL:
+        return f"不满足{rule_id}（观测值 {observed}，要求 {required}）"
+    return f"无法判定{rule_id}：候选人档案缺少该字段（要求 {required}）"
+
+
+def _overall_claim_text(outcome: HardRuleOutcome) -> str:
+    """The aggregate verdict must not conflate "failed" with "could not tell"."""
+    if outcome == HardRuleOutcome.PASS:
+        return "候选人满足全部硬性条件，可进入下一轮"
+    if outcome == HardRuleOutcome.FAIL:
+        return "候选人未满足全部硬性条件，不建议进入下一轮"
+    return "硬性条件证据不足，无法判定是否满足"
+
+
+def _summary_text(score: float, outcome: HardRuleOutcome, snapshot_order: int) -> str:
+    """Name the score for what it is: a ranking conversion, not model confidence."""
+    return (
+        f"检索排序换算分 {score:.2f}（满分 100；由快照排名第 {snapshot_order} 位与"
+        f"硬性条件结论 {outcome.value} 确定性换算，不代表模型置信度）；"
+        f"硬性条件结论：{outcome.value}。"
+    )
+
+
+def _bind_rule_evidence(
+    claim_id: UUID, rule_id_text: str, observed: object, chunks: list[EvidenceChunk]
+) -> list[ClaimEvidence]:
+    """Locate the excerpts stating one rule's observed value.
+
+    An unrecognised rule id yields no evidence rather than a guess: the caller
+    then downgrades the claim instead of citing something arbitrary.
+    """
+    try:
+        rule_id = HardRuleId(rule_id_text)
+    except ValueError:
+        return []
+    return bind_evidence(
         claim_id=claim_id,
-        evidence_chunk_id=chunk.id,
-        quote_text=chunk.text,
-        quote_start=0,
-        quote_end=len(chunk.text),
+        rule_id=rule_id,
+        observed_value=observed,
+        chunks=chunks,
     )
 
 
@@ -125,10 +185,7 @@ def build_candidate_report(
     overall_score, recommendation = _score_and_recommendation(
         snapshot_order=candidate.snapshot_order, overall=overall
     )
-    summary = (
-        f"候选人综合评分 {overall_score:.2f} 分（满分 100）；"
-        f"硬性条件结论：{overall.value}；快照排名：第 {candidate.snapshot_order} 位。"
-    )
+    summary = _summary_text(overall_score, overall, candidate.snapshot_order)
     report = MatchReport(
         id=uuid4(),
         run_id=match_run.run_id,
@@ -144,72 +201,81 @@ def build_candidate_report(
         },
     )
 
-    primary_chunk = chunks[0] if chunks else None
-    claims: list[ReportClaim] = []
-
-    # Claim 1 — aggregate hard-rule verdict.
-    overall_claim_id = uuid4()
-    overall_support = _support_for(overall)
-    overall_impact = _impact_for(overall)
-    overall_text = (
-        "候选人满足全部硬性条件，可进入下一轮" if overall == HardRuleOutcome.PASS
-        else "硬性条件证据不足，无法判定是否满足"
-    )
-    overall_text, overall_support = apply_high_impact_guard(
-        impact_level=overall_impact, support_level=overall_support, claim_text=overall_text
-    )
-    claims.append(
-        ReportClaim(
-            id=overall_claim_id,
-            report_id=report.id,
-            claim_type="hard_rule_overall",
-            claim_text=overall_text,
-            impact_level=overall_impact,
-            support_level=overall_support,
-            confidence_note=f"overall={overall.value}",
-            display_order=0,
-        )
-    )
-
-    # Claims 2..n — one per individual hard rule.
+    # Individual rules first: each binds the excerpt that states its own observed
+    # value, and the aggregate claim below is assembled from what they found.
+    rule_claims: list[tuple[ReportClaim, list[ClaimEvidence]]] = []
     for index, rule in enumerate(rules, start=1):
-        rule_id = str(rule.get("rule_id", f"rule_{index}"))
+        rule_id_text = str(rule.get("rule_id", f"rule_{index}"))
         rule_outcome = HardRuleOutcome(cast(str, rule.get("result", "UNKNOWN")))
-        rule_claim_id = uuid4()
-        rule_support = _support_for(rule_outcome)
-        rule_impact = _impact_for(rule_outcome)
         observed = rule.get("observed_value")
         required = rule.get("required_value")
-        rule_text = (
-            f"满足{rule_id}（观测值 {observed}，要求 {required}）"
-            if rule_outcome == HardRuleOutcome.PASS
-            else f"无法满足{rule_id}（观测值 {observed}，要求 {required}）"
-        )
+        rule_claim_id = uuid4()
+
+        evidences = _bind_rule_evidence(rule_claim_id, rule_id_text, observed, chunks)
+        rule_support = _support_for(rule_outcome, has_evidence=bool(evidences))
+        rule_impact = _impact_for(rule_outcome)
         rule_text, rule_support = apply_high_impact_guard(
-            impact_level=rule_impact, support_level=rule_support, claim_text=rule_text
+            impact_level=rule_impact,
+            support_level=rule_support,
+            claim_text=_rule_claim_text(rule_outcome, rule_id_text, observed, required),
         )
-        claims.append(
-            ReportClaim(
-                id=rule_claim_id,
-                report_id=report.id,
-                claim_type=f"hard_rule:{rule_id}",
-                claim_text=rule_text,
-                impact_level=rule_impact,
-                support_level=rule_support,
-                confidence_note=f"result={rule_outcome.value}",
-                display_order=index,
+        if rule_support == SupportLevel.PARTIAL:
+            # PARTIAL means the rule verdict stands on confirmed profile fields
+            # but the resume text never states the value it rests on. Say so, or
+            # a reader sees "满足…" next to a weaker support level and no reason.
+            rule_text = f"{rule_text}（未在候选人原文中定位到该观测值）"
+        rule_claims.append(
+            (
+                ReportClaim(
+                    id=rule_claim_id,
+                    report_id=report.id,
+                    claim_type=f"hard_rule:{rule_id_text}",
+                    claim_text=rule_text,
+                    impact_level=rule_impact,
+                    support_level=rule_support,
+                    confidence_note=(
+                        f"result={rule_outcome.value}; "
+                        f"evidence={'located' if evidences else 'not_found'}"
+                    ),
+                    display_order=index,
+                ),
+                evidences,
             )
         )
 
-    # Wire evidence: cite the primary chunk for every claim that has one.
-    claim_views: list[ClaimView] = []
-    for claim in claims:
-        evidences: list[ClaimEvidence] = []
-        if primary_chunk is not None and claim.support_level == SupportLevel.SUPPORTED:
-            # Only SUPPORTED claims assert a backed verdict; INSUFFICIENT claims
-            # carry no verbatim assertion to pin (they already say "insufficient").
-            evidences.append(_quote_evidence(primary_chunk, claim.id))
-        claim_views.append(ClaimView(claim=claim, evidences=evidences))
+    # Claim 0 — the aggregate verdict, backed by the union of the rule evidence.
+    # Built last so it can only ever cite what the individual rules established.
+    overall_claim_id = uuid4()
+    overall_evidence = merge_evidence(overall_claim_id, [ev for _, ev in rule_claims])
+    overall_support = _overall_support(overall, [c.support_level for c, _ in rule_claims])
+    overall_impact = _impact_for(overall)
+    overall_text, overall_support = apply_high_impact_guard(
+        impact_level=overall_impact,
+        support_level=overall_support,
+        claim_text=_overall_claim_text(overall),
+    )
+    if overall_support == SupportLevel.PARTIAL:
+        overall_text = f"{overall_text}（未在候选人原文中定位到支持该结论的片段）"
+    overall_claim = ReportClaim(
+        id=overall_claim_id,
+        report_id=report.id,
+        claim_type="hard_rule_overall",
+        claim_text=overall_text,
+        impact_level=overall_impact,
+        support_level=overall_support,
+        confidence_note=(
+            f"overall={overall.value}; "
+            f"evidence={'located' if overall_evidence else 'not_found'}"
+        ),
+        display_order=0,
+    )
+
+    claim_views: list[ClaimView] = [
+        ClaimView(claim=overall_claim, evidences=overall_evidence)
+    ]
+    claim_views.extend(
+        ClaimView(claim=claim, evidences=evidences) for claim, evidences in rule_claims
+    )
     return ReportView(report=report, claims=claim_views)
 
 

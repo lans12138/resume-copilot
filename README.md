@@ -195,9 +195,9 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 
 | 项 | 值 |
 |---|---|
-| 后端 | 153 个 Python 文件（`backend/`）/ 约 21.8k 行；`ruff` 干净，`mypy` strict 通过 |
-| 后端测试 | `pytest -q` → **576 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
-| 前端 | 69 个 `.ts` / `.tsx` / 约 7.3k 行；`tsc -b` 干净，`vitest` 22 个测试文件 **121 passed**，`vite build` 通过 |
+| 后端 | 155 个 Python 文件（`backend/`）/ 约 22.1k 行；`ruff` 干净，`mypy` strict 通过 |
+| 后端测试 | `pytest -q` → **643 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
+| 前端 | 70 个 `.ts` / `.tsx` / 约 7.4k 行；`tsc -b` 干净，`vitest` 23 个测试文件 **127 passed**，`vite build` 通过 |
 | E2E | 5 个 Playwright spec（含 FIN-010 非种子主路径、FIN-011 故障与安全矩阵） |
 | 迁移 | 12 个 Alembic 版本，head `0012_evaluation_tables`，25 张表 |
 | 探针 | `tests/` 下 25 个受版本控制的 PowerShell 探针，其中 **23 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
@@ -211,7 +211,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | FIN-001 ~ FIN-012（幂等、Worker 基线、文档闭环、前端闭环、异步恢复、维护任务、评测、真实适配器、运行时 ADR、非种子主路径、故障矩阵、完整 Compose 与 CI） | ✅ 全部 DONE，逐项证据见 [`编码实现计划.md`](./编码实现计划.md) §20.2 / §20.3 |
 | FIN-013 发布收口 | ✅ 全部 DONE：README 与环境清单校准、CI run 35066318081 全绿（含 `project.ps1 verify` 全量）、Secret/隐私扫描与依赖审计干净、`ONE_COMMAND_UP_VALIDATION_OK` / `API_RUNTIME_VALIDATION_OK` / `NGINX_PROXY_VALIDATION_OK`、release commit + `v1.0.0` tag |
 | PORT-001 运行配置、依赖与测试隔离 | ✅ DONE：`httpx2` 纳入运行依赖并同步双锁文件；模型端点、凭据、模型名、超时、向量维度与 SSE 心跳由 Compose 透传；配置单测与本地 `.env` 隔离；README 与环境清单口径校准。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
-| PORT-001 运行配置、依赖与测试隔离 | ✅ DONE：`httpx2` 纳入运行依赖并同步双锁文件；模型端点、凭据、模型名、超时、向量维度与 SSE 心跳由 Compose 透传；配置单测与本地 `.env` 隔离；README 与环境清单口径校准。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
+| PORT-002 逐项证据绑定与评分语义 | ✅ DONE：报告结论不再默认引用第一条证据，改为按观测值在候选人原文中定位（学历等级归一化到同一序数表、技能按词边界匹配、年限要求精确等值），定位不到即降级支持等级并在文案与 `confidence_note` 中说明；分数明确标注为「检索排序换算分（非模型置信度）」。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 
 ## MVP 边界
 

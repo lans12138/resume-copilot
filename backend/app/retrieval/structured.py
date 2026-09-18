@@ -12,21 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from backend.app.retrieval.education import education_rank
 from backend.app.retrieval.models import JobQuery, ReadyProfile, RecallHit
 from backend.app.retrieval.skill_normalization import SkillNormalizer
-
-# Ordinal education ranks for MVP synthetic data; unknown strings rank as None.
-_EDU_RANK: dict[str, int] = {
-    "高中": 1,
-    "中专": 1,
-    "大专": 2,
-    "专科": 2,
-    "本科": 3,
-    "学士": 3,
-    "硕士": 4,
-    "研究生": 4,
-    "博士": 5,
-}
 
 
 @dataclass(frozen=True)
@@ -89,8 +77,8 @@ class StructuredRecaller:
     def _education_score(required: str | None, candidate: str | None) -> float:
         if required is None or candidate is None:
             return 0.0
-        required_rank = _EDU_RANK.get(required.strip().casefold())
-        candidate_rank = _EDU_RANK.get(candidate.strip().casefold())
+        required_rank = education_rank(required)
+        candidate_rank = education_rank(candidate)
         if required_rank is None or candidate_rank is None:
             return 0.0
         if candidate_rank >= required_rank:

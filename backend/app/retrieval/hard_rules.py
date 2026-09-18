@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from backend.app.retrieval.education import education_rank
 from backend.app.retrieval.models import (
     FusedCandidate,
     HardRuleBundle,
@@ -23,15 +24,6 @@ from backend.app.retrieval.models import (
     JobQuery,
     ReadyProfile,
 )
-
-# Ordinal education scale for requirement comparison. Missing/unmapped levels
-# are treated as unknown rather than failed (we never guess a FAIL).
-EDUCATION_ORDER: dict[str, int] = {
-    "大专": 1,
-    "本科": 2,
-    "硕士": 3,
-    "博士": 4,
-}
 
 # Stable reason codes; chosen to be machine-checkable in Golden Dataset reports.
 REASON_MEETS_MINIMUM = "MEETS_MINIMUM"
@@ -93,8 +85,8 @@ def _education_rule(job: JobQuery, profile: ReadyProfile) -> HardRuleResult:
             observed_value=None,
             required_value=job.required_education,
         )
-    required_ord = EDUCATION_ORDER.get(job.required_education)
-    observed_ord = EDUCATION_ORDER.get(profile.education_level)
+    required_ord = education_rank(job.required_education)
+    observed_ord = education_rank(profile.education_level)
     if required_ord is None or observed_ord is None:
         return HardRuleResult(
             rule_id=HardRuleId.REQUIRED_EDUCATION,

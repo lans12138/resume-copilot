@@ -27,6 +27,7 @@ apps/web/test-results/
 # IDE and operating system
 .idea/
 .vscode/
+.workbuddy-ai/
 .DS_Store
 Thumbs.db
 
