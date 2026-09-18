@@ -131,6 +131,14 @@ try {
             'postgres', 'redis', 'api', 'worker', 'scheduler', 'web'
         )
 
+        # Nginx resolves the Compose service name when it starts. If Compose
+        # recreates api but leaves an already-healthy web container running,
+        # Nginx keeps the retired container IP and /api returns 502. Refresh the
+        # stateless proxy after every converged update so repeated starts are as
+        # reliable as a clean start.
+        Write-Host '      refreshing web proxy upstream resolution...'
+        Invoke-Compose @('restart', 'web')
+
         if ($ResetDemo) {
             Write-Host '[2/3] Resetting synthetic demo data...'
             Invoke-Compose @('--profile', 'tools', 'run', '--rm', 'seed', '--', '--reset')
