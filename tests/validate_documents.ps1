@@ -73,6 +73,9 @@ $detailedDesign = Read-RepositoryDocument '详细设计说明书.md'
 $implementationPlan = Read-RepositoryDocument '编码实现计划.md'
 $environmentChecklist = Read-RepositoryDocument '环境配置清单.md'
 $demoScript = Read-RepositoryDocument '演示脚本.md'
+# Keep the follow-up roadmap in the required document set; the generic checks
+# above validate its Markdown tables, fences, and repository-local links.
+Read-RepositoryDocument '后续开发计划.md' | Out-Null
 
 $requirementDefinitions = [regex]::Matches(
     $requirements,
