@@ -224,6 +224,10 @@ try {
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_evaluations.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_evaluation_gate.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_model_adapter.ps1')
+            # PORT-001: the runtime image installs only requirements.lock, so it is
+            # the only place that can prove the real model adapters are actually
+            # importable in production. The development image above cannot.
+            Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_runtime_model_adapter.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_worker.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_auth.ps1')
             Invoke-Checked 'pwsh' @('-NoProfile', '-File', 'tests/validate_document_upload.ps1')

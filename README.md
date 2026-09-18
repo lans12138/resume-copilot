@@ -26,7 +26,7 @@ flowchart TB
         NGX["Nginx 1.29.3-alpine<br/>静态 SPA + /api 反向代理<br/>两条 SSE 路由关缓冲"]
     end
 
-    subgraph FRONTEND["前端 (React 19 + TS + Vite + AntD)"]
+    subgraph FRONTEND["前端 (React 19 + TS + Vite)"]
         UI["RunTimeline / RankingTable / ClaimEvidencePanel<br/>Approval / Interview / Evaluations"]
     end
 
@@ -70,7 +70,7 @@ flowchart TB
 
 | 层 | 选型 |
 |---|---|
-| 前端 | React 19 + TypeScript 5.9 + Vite 7 + Ant Design + React Flow + ECharts |
+| 前端 | React 19 + TypeScript 5.9 + Vite 7 + React Router 7 + TanStack Query 5 + Zustand 5（组件与样式自研，不引入 UI 组件库） |
 | 后端 | Python 3.12.14 + FastAPI 0.141 + Pydantic 2.13 + SQLAlchemy 2 / Alembic |
 | 数据库 | PostgreSQL 17 + pgvector（1024 维向量，镜像 digest 固定） |
 | 任务 | Redis 7.4 + Celery 5.6（Worker + Beat） |
@@ -172,12 +172,14 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | `JWT_SECRET` | ≥48 位随机串（生产必改） |
 | `DATABASE_URL` / `REDIS_URL` | 默认指向 Compose 服务名 `postgres` / `redis` |
 | `MOCK_MODEL_MODE` | `true` 时走确定性 FakeModel，无需真实 API Key 即可演示 |
+| `MODEL_BASE_URL` / `QWEN_API_KEY` | 真实模型端点与凭据，由 Compose 透传给 API / Worker / Scheduler。`MOCK_MODEL_MODE=false` 时二者必填，缺失即启动失败；空值按「未配置」处理，不会退化成空端点 |
+| `CHAT_MODEL` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSION` | 模型名与向量维度 |
 | `EMBEDDING_DIMENSION` | 必须与 embedding 模型一致，默认 `1024` |
 | `APPROVAL_TTL_MINUTES` | Approval 过期扫描窗口（由 Celery Beat 周期触发） |
 | `STORAGE_ROOT` | 简历存储根（Compose 中挂载为卷） |
 | `WEB_HOST_PORT` / `API_HOST_PORT` / `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` | 宿主侧调试端口，被 `compose.override.yaml` 使用 |
 
-> `SSE_HEARTBEAT_SECONDS` 的实际生效值是**代码默认 1 秒**：`compose.yaml` 目前不转发该变量，`.env.example` 里的 `15` 只在本机直跑后端时生效。心跳同时是撤权通知的载体，缩短它才能让在线撤权在一次心跳内可见。
+> `SSE_HEARTBEAT_SECONDS` 由 `compose.yaml` 转发，所以 `.env.example` 里的值就是容器实际取值（默认 `1` 秒）。心跳同时是撤权通知的载体：API 在每个心跳重新校验授权，缩短它才能让在线撤权在一次心跳内可见。
 
 ## 合成演示数据
 
@@ -193,12 +195,12 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 
 | 项 | 值 |
 |---|---|
-| 后端 | 153 个 Python 文件 / 约 18.2k 行；`ruff` 干净，`mypy` strict 通过 |
-| 后端测试 | `pytest -q` → **554 passed**（+18 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行） |
-| 前端 | 69 个 `.ts` / `.tsx` / 约 6.5k 行；`tsc -b` 干净，`vitest` 22 个测试文件 **118 passed**，`vite build` 通过 |
+| 后端 | 153 个 Python 文件（`backend/`）/ 约 21.8k 行；`ruff` 干净，`mypy` strict 通过 |
+| 后端测试 | `pytest -q` → **576 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
+| 前端 | 69 个 `.ts` / `.tsx` / 约 7.3k 行；`tsc -b` 干净，`vitest` 22 个测试文件 **121 passed**，`vite build` 通过 |
 | E2E | 5 个 Playwright spec（含 FIN-010 非种子主路径、FIN-011 故障与安全矩阵） |
 | 迁移 | 12 个 Alembic 版本，head `0012_evaluation_tables`，25 张表 |
-| 探针 | `tests/` 下 24 个受版本控制的 PowerShell 探针，其中 **22 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
+| 探针 | `tests/` 下 25 个受版本控制的 PowerShell 探针，其中 **23 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
 | 运行时 | Python 3.12.14 / Node 22.23.2 / PostgreSQL 17 + pgvector / Redis 7.4-alpine / Nginx 1.29.3-alpine（镜像全部固定 tag 或 digest，无 `latest`） |
 
 ## 实现进度
@@ -208,13 +210,23 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | IMP-001 ~ IMP-030（工程骨架到发布） | ✅ 全部提交 |
 | FIN-001 ~ FIN-012（幂等、Worker 基线、文档闭环、前端闭环、异步恢复、维护任务、评测、真实适配器、运行时 ADR、非种子主路径、故障矩阵、完整 Compose 与 CI） | ✅ 全部 DONE，逐项证据见 [`编码实现计划.md`](./编码实现计划.md) §20.2 / §20.3 |
 | FIN-013 发布收口 | ✅ 全部 DONE：README 与环境清单校准、CI run 35066318081 全绿（含 `project.ps1 verify` 全量）、Secret/隐私扫描与依赖审计干净、`ONE_COMMAND_UP_VALIDATION_OK` / `API_RUNTIME_VALIDATION_OK` / `NGINX_PROXY_VALIDATION_OK`、release commit + `v1.0.0` tag |
+| PORT-001 运行配置、依赖与测试隔离 | ✅ DONE：`httpx2` 纳入运行依赖并同步双锁文件；模型端点、凭据、模型名、超时、向量维度与 SSE 心跳由 Compose 透传；配置单测与本地 `.env` 隔离；README 与环境清单口径校准。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
+| PORT-001 运行配置、依赖与测试隔离 | ✅ DONE：`httpx2` 纳入运行依赖并同步双锁文件；模型端点、凭据、模型名、超时、向量维度与 SSE 心跳由 Compose 透传；配置单测与本地 `.env` 隔离；README 与环境清单口径校准。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 
 ## MVP 边界
 
 - 电子 PDF / DOCX（无 OCR）、合成数据、单机、MockSchedule、精确向量检索（HNSW 不默认启用）、Langfuse 可选。
 - 未审批副作用执行次数 = 0；RBAC 服务端每次重校验；SSE 每批 / 心跳持续授权。
-- 尚未闭环的两项，均属「机制已就绪、缺显式触发」：真实百炼凭据下的模型诊断与评测；手动的真实模型 CI 工作流。
-- `SSE_HEARTBEAT_SECONDS` 未由 Compose 转发（生效值为代码默认 1 秒）；`.env.example` 与容器实际取值存在这处已知差异。
+- 尚未闭环的两项，均属「机制已就绪、缺显式触发」：真实百炼凭据下的模型诊断与评测；手动的真实模型 CI 工作流。运行镜像的模型依赖与配置透传已补齐（PORT-001），关掉 mock 时会解析到真实网关，缺凭据则在启动阶段明确失败，而不是悄悄退回 FakeModel。
+- `SSE_HEARTBEAT_SECONDS` 由 Compose 转发，`.env.example`、Compose 默认值与代码默认值统一为 1 秒。
+
+## 版本口径
+
+三处版本号彼此独立，不要互相推导：
+
+- **发布标签** `v1.0.0` 标记 FIN-013 发布收口那次提交，是本仓库的演示基线快照。
+- **后端包**（`pyproject.toml`）与**前端包**（`apps/web/package.json`）的版本号均为 `0.1.0`，是随 PORT 系列继续迭代的工作版本，不随发布标签走。
+- **API 版本**是路径前缀 `/api/v1`（`API_BASE_PATH`），属于 HTTP 契约，与上面两个包版本无关。
 
 ## 说明
 

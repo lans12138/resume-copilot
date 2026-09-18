@@ -24,6 +24,35 @@ x-backend-environment: &backend-environment
   MAX_BATCH_FILES: ${MAX_BATCH_FILES:-20}
   PARSER_VERSION: ${PARSER_VERSION:-v1}
   MOCK_MODEL_MODE: ${MOCK_MODEL_MODE:-true}
+  # PORT-001: the real model adapters read their endpoint, credentials, model
+  # names and vector width from the process environment. None of these were
+  # forwarded before, so a deployment could only ever run FakeModel: the
+  # container never saw MODEL_BASE_URL or QWEN_API_KEY even when the operator had
+  # put them in .env, and switching MOCK_MODEL_MODE to false failed at startup
+  # with "missing configuration" instead of calling the model. This anchor is
+  # shared by api, worker, migrate and seed, so all processes now resolve the same
+  # model configuration instead of drifting apart.
+  #
+  # The empty default is deliberate: Settings normalizes a blank value to "not
+  # configured", so an unset endpoint still produces the loud startup error
+  # rather than an empty-string endpoint that only fails on the first call.
+  MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+  QWEN_API_KEY: ${QWEN_API_KEY:-}
+  CHAT_MODEL: ${CHAT_MODEL:-qwen3.7-plus}
+  MODEL_TIMEOUT_SECONDS: ${MODEL_TIMEOUT_SECONDS:-60}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3.7-text-embedding}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
+  EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
+  PROMPT_VERSION: ${PROMPT_VERSION:-v1}
+  RULE_VERSION: ${RULE_VERSION:-v1}
+  # PORT-001: the heartbeat is now forwarded, so the documented value and the
+  # container's behaviour agree. It is also the carrier for SSE revocation —
+  # shortening it is what makes an online revocation visible within one interval
+  # — so the default stays at the code default of 1s rather than the 15s that
+  # .env.example used to advertise while the container silently ignored it.
+  SSE_HEARTBEAT_SECONDS: ${SSE_HEARTBEAT_SECONDS:-1}
+  SSE_BATCH_SIZE: ${SSE_BATCH_SIZE:-100}
+  SSE_RETRY_MILLISECONDS: ${SSE_RETRY_MILLISECONDS:-1000}
 
 services:
   api:

@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,29 @@ class LogFormat(StrEnum):
 
     JSON = "json"
     TEXT = "text"
+
+
+# A blank entry in ``.env`` (``MODEL_BASE_URL=``) arrives at the process as an
+# empty string, not as an absent variable, and Compose forwards the optional
+# model settings with an empty default. Without normalization a blank value would
+# be read as "configured, but empty": it would satisfy the presence check and then
+# fail at call time instead of failing loudly at startup. ``storage_root`` is in
+# this list for the same reason — ``""`` would otherwise coerce to ``Path(".")``
+# and be reported as "not absolute" rather than "missing".
+_BLANK_MEANS_UNSET = (
+    "jwt_secret",
+    "postgres_password",
+    "database_url",
+    "redis_url",
+    "celery_broker_url",
+    "celery_result_backend",
+    "storage_root",
+    "model_base_url",
+    "qwen_api_key",
+    "langfuse_host",
+    "langfuse_public_key",
+    "langfuse_secret",
+)
 
 
 class Settings(BaseSettings):
@@ -116,6 +139,14 @@ class Settings(BaseSettings):
     langfuse_secret: SecretStr | None = None
     prompt_version: str = "v1"
     rule_version: str = "v1"
+
+    @field_validator(*_BLANK_MEANS_UNSET, mode="before")
+    @classmethod
+    def normalize_blank_optional_values(cls, value: object) -> object:
+        """Treat a blank string as "not configured" for every optional setting."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_runtime_contract(self) -> Self:

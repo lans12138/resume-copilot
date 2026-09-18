@@ -12,6 +12,11 @@ dependencies = [
   "asyncpg>=0.30,<1.0",
   "celery>=5.5,<6.0",
   "fastapi>=0.116,<1.0",
+  # The real (non-FakeModel) chat and embedding adapters speak HTTP through
+  # ``httpx2``. It is a *runtime* dependency: the production image installs only
+  # requirements.lock, so keeping it in the dev extra made the real adapters
+  # unimportable in the container that actually serves traffic (PORT-001).
+  "httpx2>=2.12,<3.0",
   "pwdlib[argon2]>=0.3,<1.0",
   "pydantic-settings>=2.10,<3.0",
   "pymupdf>=1.28,<2.0",
@@ -26,7 +31,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "httpx2>=2.12,<3.0",
   "mypy>=1.17,<2.0",
   "pytest>=8.4,<9.0",
   "ruff>=0.12,<1.0",
