@@ -35,6 +35,7 @@ from backend.app.evaluations.corpus import (
     _text_backing_for,
     build_builtin_corpus,
 )
+from backend.app.infrastructure.model_gateway import _SKILL_KEYWORDS
 from backend.app.reports.evidence_binding import _CN_YEARS_RE, _YEARS_RE
 from backend.app.reports.models import SupportLevel
 from backend.app.retrieval.education import EDUCATION_SURFACE_FORMS, education_canonical
@@ -51,6 +52,7 @@ _EXPECTED_TABLE: dict[str, tuple[str, str, str, str]] = {
     "strong-match": ("PASS/SUPPORTED",) * 4,
     "case-variant-skills": ("PASS/SUPPORTED",) * 4,
     "extra-skills": ("PASS/SUPPORTED",) * 4,
+    "out-of-vocabulary-skills": ("PASS/SUPPORTED",) * 4,
     "cross-segment-evidence": ("PASS/SUPPORTED",) * 4,
     "irrelevant-evidence": ("PASS/SUPPORTED",) * 4,
     "overlapping-dates": ("PASS/SUPPORTED",) * 4,
@@ -153,9 +155,9 @@ def _sections_containing(case: CorpusCase, needle: str) -> list[str]:
 
 
 def test_the_corpus_is_every_archetype_against_every_job_family() -> None:
-    assert len(_ARCHETYPES) == 12
+    assert len(_ARCHETYPES) == 13
     assert len(JOB_FAMILIES) == 4
-    assert len(BUILTIN_CORPUS.cases) == 48
+    assert len(BUILTIN_CORPUS.cases) == 52
     assert {case.archetype for case in BUILTIN_CORPUS.cases} == {
         archetype.key for archetype in _ARCHETYPES
     }
@@ -196,7 +198,7 @@ def test_every_case_declares_all_four_conclusions_and_a_note() -> None:
 
 def test_by_job_family_partitions_the_corpus() -> None:
     groups = [BUILTIN_CORPUS.by_job_family(family.key) for family in JOB_FAMILIES]
-    assert [len(group) for group in groups] == [12, 12, 12, 12]
+    assert [len(group) for group in groups] == [13, 13, 13, 13]
     ids = [case.case_id for group in groups for case in group]
     assert len(set(ids)) == len(BUILTIN_CORPUS.cases)
 
@@ -374,6 +376,17 @@ def test_extraction_gold_is_reachable_from_the_resume_text() -> None:
         assert name.casefold() in text, case.case_id
         for skill in case.extraction.skills:
             assert skill.casefold() in text, (case.case_id, skill)
+
+
+def test_at_least_one_declared_skill_is_outside_the_heuristic_vocabulary() -> None:
+    """Otherwise the mock-mode extraction score is 1.0 by construction.
+
+    If every skill in the corpus came from the fake extractor's hard-coded list, a
+    perfect extraction score would say nothing: a reader could not tell "the
+    extractor is right" from "the gold was written from the same list".
+    """
+    declared = {skill for case in BUILTIN_CORPUS.cases for skill in case.extraction.skills}
+    assert declared - set(_SKILL_KEYWORDS)
 
 
 def test_extraction_education_is_derived_from_the_resume_spelling() -> None:

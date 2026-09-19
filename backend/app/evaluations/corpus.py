@@ -287,7 +287,7 @@ class EvaluationCorpus:
 # All four share ``min_years = 3.0`` and ``required_education = 本科`` on purpose.
 # With the thresholds held constant, a candidate archetype's hard-rule outcome is
 # the same against every family, so the declared gold below can be written once
-# per archetype instead of once per (archetype, family) pair — forty-eight declarations
+# per archetype instead of once per (archetype, family) pair — fifty-two declarations
 # nobody would read, versus ten a reviewer can check. The invariant is not left to
 # trust: ``test_corpus_job_families_share_the_gate_thresholds`` asserts it, so
 # relaxing one family's bar forces the gold to be re-derived.
@@ -559,6 +559,32 @@ _ARCHETYPES: tuple[_Archetype, ...] = (
             HardRuleId.REQUIRED_SKILLS: HardRuleOutcome.PASS,
         },
         locatable=frozenset({HardRuleId.REQUIRED_EDUCATION, HardRuleId.REQUIRED_SKILLS}),
+        relevant=True,
+    ),
+    _Archetype(
+        key="out-of-vocabulary-skills",
+        split=Split.DEV,
+        tags=(),
+        note=(
+            "必备技能之外还写了抽取词表里没有的技能（kotlin、grpc）。抽取召回率因此"
+            "达不到满分——这是刻意的：如果每一项技能都取自同一个词表，Mock 模式下的"
+            "抽取指标会恒等于 1.0，读者就无法分辨「抽取确实正确」和「标准答案照着词表写」。"
+        ),
+        sections=(
+            ("summary", "{name}｜{years} 年工作经验｜学历：{education}"),
+            ("skill", "技能：{required}、kotlin、grpc"),
+            ("experience", "工作经历：{years} 年，负责服务端与接口开发。"),
+        ),
+        skills=("__required__", "kotlin", "grpc"),
+        years_experience=6.0,
+        education_level="BACHELOR",
+        education_surface="本科",
+        outcomes={
+            HardRuleId.YEARS_EXPERIENCE: HardRuleOutcome.PASS,
+            HardRuleId.REQUIRED_EDUCATION: HardRuleOutcome.PASS,
+            HardRuleId.REQUIRED_SKILLS: HardRuleOutcome.PASS,
+        },
+        locatable=frozenset(HardRuleId),
         relevant=True,
     ),
     _Archetype(
@@ -891,7 +917,7 @@ def build_builtin_corpus() -> EvaluationCorpus:
     """Compose the corpus: every archetype against every job family.
 
     Deterministic by construction — no randomness, no clock, no environment — so
-    the same commit always produces the same 48 cases and the same content hash.
+    the same commit always produces the same 52 cases and the same content hash.
     """
     cases: list[CorpusCase] = []
     for index, archetype in enumerate(_ARCHETYPES):
@@ -928,7 +954,7 @@ def build_builtin_corpus() -> EvaluationCorpus:
         name=CORPUS_NAME,
         version=CORPUS_VERSION,
         note=(
-            "48 个由原始简历文本与岗位输入驱动的用例（12 类画像 × 4 类岗位）；"
+            "52 个由原始简历文本与岗位输入驱动的用例（13 类画像 × 4 类岗位）；"
             "标准答案在本模块中独立声明，不由预测器产出。"
         ),
         cases=tuple(cases),
