@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from alembic import op
-from sqlalchemy import Column, Constraint, PrimaryKeyConstraint, String
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    Constraint,
+    PrimaryKeyConstraint,
+    String,
+)
 
 from backend.app.explanations.models import MatchExplanation
 from backend.app.infrastructure.model_registry import (
@@ -75,6 +82,20 @@ class _Recorder:
 
     def create_check_constraint(self, name: str, table: str, condition: str, **_k: Any) -> None:
         self.checks.append((name, table, condition))
+
+    # The remaining ops the chain calls. ``upgrade()`` never drops anything, so
+    # the only thing needed here is to let these through without a database.
+    def create_foreign_key(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def create_unique_constraint(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def execute(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def f(self, name: str) -> str:
+        return name
 
 
 @pytest.fixture()
@@ -150,6 +171,33 @@ def test_migration_adds_the_claim_source_with_a_rule_default(
     ) in port003_ddl.checks
 
 
+def test_every_check_constraint_the_migration_creates_is_declared_by_a_model(
+    port003_ddl: _Recorder,
+) -> None:
+    """A constraint only the migration knows about is drift, not a contract.
+
+    ``alembic check`` diffs the migrated database against ``get_model_metadata()``.
+    ``ck_report_claims_source`` therefore has to be declared on ``ReportClaim`` as
+    well as created by 0013: a constraint that exists in the database but not in
+    the metadata reads as one constraint too many, and autogenerate proposes to
+    drop the very rule the migration just added. That comparison needs a live
+    database, so the agreement is asserted here instead.
+    """
+    metadata = get_model_metadata()
+    assert port003_ddl.checks, "the fixture recorded no check constraint"
+
+    for name, table, condition in port003_ddl.checks:
+        declared = {
+            constraint.name: constraint
+            for constraint in metadata.tables[table].constraints
+            if constraint.name
+        }
+        assert name in declared, f"{name} is migrated on {table} but not declared"
+        constraint = declared[name]
+        assert isinstance(constraint, CheckConstraint)
+        assert str(constraint.sqltext) == condition
+
+
 def test_migration_indexes_the_run_and_the_status(port003_ddl: _Recorder) -> None:
     """Both are query patterns an operator uses: "what did this run do?" and
     "how many runs are degrading because the upstream is rate limiting us?"."""
@@ -165,4 +213,91 @@ def test_migration_revision_chain_is_pinned(port003_ddl: _Recorder) -> None:
     assert module.revision == "0013_match_explanations"
     assert module.down_revision == "0012_evaluation_tables"
     assert port003_ddl.columns  # the fixture actually ran the upgrade
+
+
+# ----------------------------------------------------------------------
+# Migration chain ↔ model metadata (every revision, still no database)
+# ----------------------------------------------------------------------
+
+
+def _versions_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "migrations" / "versions"
+
+
+def _named_check_constraint_names(constraints: Iterable[Constraint]) -> set[str]:
+    """The names ``alembic check`` compares.
+
+    Mirrors ``alembic.util.sqla_compat.all_table_check_constraints`` plus its
+    named-and-not-type-bound filter: an unnamed constraint has no identity to
+    match on, and a type-bound one is a by-product of a column type rather than a
+    rule anyone wrote. Read through ``getattr`` because ``_type_bound`` is
+    SQLAlchemy-internal.
+    """
+    return {
+        str(constraint.name)
+        for constraint in constraints
+        if isinstance(constraint, CheckConstraint)
+        and constraint.name
+        and not getattr(constraint, "_type_bound", False)
+    }
+
+
+@pytest.fixture()
+def migrated_check_constraints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, set[str]]:
+    """Replay every ``upgrade()`` in the chain and collect the checks it creates.
+
+    The chain is what the database actually ends up with, so this is the other
+    side of the comparison ``alembic check`` makes against a live database.
+    Upgrades never drop anything (only downgrades do), so no ``drop_*`` op needs
+    a stand-in here; a future migration that calls an op missing from
+    ``_Recorder`` will fail loudly rather than be skipped.
+    """
+    recorder = _Recorder()
+    for attribute in (
+        "create_table",
+        "add_column",
+        "create_index",
+        "create_foreign_key",
+        "create_unique_constraint",
+        "create_check_constraint",
+        "execute",
+        "f",
+    ):
+        monkeypatch.setattr(op, attribute, getattr(recorder, attribute))
+
+    previous: str | None = None
+    for path in sorted(_versions_dir().glob("*.py")):
+        module = _load_migration(path.name)
+        assert module.down_revision == previous, f"{path.name} does not follow the chain"
+        module.upgrade()
+        previous = module.revision
+
+    collected: dict[str, set[str]] = {
+        table: _named_check_constraint_names(constraints)
+        for table, constraints in recorder.constraints.items()
+    }
+    for name, table, _condition in recorder.checks:
+        collected.setdefault(table, set()).add(name)
+    return collected
+
+
+def test_the_chain_and_the_models_declare_the_same_check_constraints(
+    migrated_check_constraints: dict[str, set[str]],
+) -> None:
+    """Both directions of the drift, without needing PostgreSQL to run ``alembic check``.
+
+    A check constraint only the migration knows about reads as "one constraint too
+    many" and autogenerate proposes to drop it; one only the model knows about
+    reads as missing and autogenerate proposes to add it. The first is how
+    ``ck_report_claims_source`` slipped through: it was created by 0013 and never
+    declared on ``ReportClaim``, and nothing but a live database noticed.
+    """
+    metadata = get_model_metadata()
+    assert set(migrated_check_constraints) == set(metadata.tables)
+
+    for table_name, migrated in sorted(migrated_check_constraints.items()):
+        declared = _named_check_constraint_names(metadata.tables[table_name].constraints)
+        assert migrated == declared, table_name
 

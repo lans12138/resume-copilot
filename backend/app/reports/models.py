@@ -123,7 +123,12 @@ class MatchReport(Base):
 
 
 class ReportClaim(Base):
-    """A single deterministic conclusion inside a ``MatchReport``."""
+    """One conclusion inside a ``MatchReport``, tagged with who produced it.
+
+    Either a deterministic verdict (``ClaimSource.RULE``) or model-authored
+    commentary (``ClaimSource.MODEL``) — see ``ClaimSource`` for why the two may
+    never be confused.
+    """
 
     __tablename__ = "report_claims"
     __table_args__ = (
@@ -132,6 +137,14 @@ class ReportClaim(Base):
         ),
         UniqueConstraint("report_id", "display_order", name="uq_report_claims_order"),
         Index("ix_report_claims_report", "report_id"),
+        # 0013 creates this constraint with ``op.create_check_constraint``, which
+        # the metadata cannot infer from the column type (the ``Enum`` above sets
+        # ``create_constraint=False`` on purpose). Declaring it here is not
+        # decoration: ``alembic check`` compares the migrated database against
+        # this metadata, so a constraint only the migration knows about reads as
+        # drift and autogenerate proposes to drop the very rule the migration
+        # added.
+        CheckConstraint("source IN ('RULE','MODEL')", name="ck_report_claims_source"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
