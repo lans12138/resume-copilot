@@ -32,7 +32,7 @@
 | 迁移（离线） | `alembic upgrade head --sql` | 退出 0，生成 40 条 `CREATE TABLE` / `ALTER TABLE` |
 | 恢复与幂等 | `pytest -q tests/unit/test_concurrency_recovery.py tests/unit/test_side_effects.py tests/unit/test_idempotency.py` | **15 passed** |
 | 前端类型 | `tsc -b` | 干净 |
-| 前端测试 | `vitest run` | **31 files / 238 passed** |
+| 前端测试 | `vitest run` | **31 files / 239 passed** |
 | 前端构建 | `vite build` | 通过（`dist/assets/index-*.js` 383.16 kB / gzip 116.09 kB） |
 | 文档通用检查 | 宿主复现 `validate_documents.ps1` 的围栏 / 表格 / 链接 / 文件数断言 | `MARKDOWN_GENERIC_OK markdown=12 local_links=60` |
 | 演示脚本契约串 | 逐条 `grep -F` 核对 9 个必需串 + 2 条负向断言 | 9/9 命中，负向断言 0 命中 |
@@ -73,7 +73,47 @@
 
 ## 4. CI 结果
 
-见 §5 的补充记录（在发布候选推送后填入 run 编号与结论）。
+发布候选的**代码版本**由 CI 完整跑过，两个 job 全绿：
+
+- run [`35443075182`](https://github.com/lans12138/resume-copilot/actions/runs/35443075182)（提交 `c23642ac`）
+  - `Static gates (docs, structure, TOML/JSON)`：通过 —— `validate_documents.ps1` + `validate_project_structure.ps1`
+  - `Reproducible project gate`：通过 —— 即 `pwsh scripts/project.ps1 verify` 的完整入口。**§3 中标 ✗ 的每一步都在这里真实执行过**，不再有「只靠推演」的步骤。
+
+### 4.1 之前从未取得结果的步骤
+
+| 探针 | CI 输出（摘录） |
+|---|---|
+| `validate_web.ps1`（Playwright） | `WEB_VALIDATION_OK browser=chromium flow=login-match-application-dual-approval-interview flow=upload-review-readiness storage=session-only`；`18 passed (52.2s)` |
+| `validate_documents.ps1` | `DOCUMENT_VALIDATION_OK markdown=12 requirements=162 resources=27 api_methods=46 detailed_sections=24 contracts=10 plan_sections=21 work_packages=30 planned_days=27 plan_contracts=16 environment_sections=19 environment_variables=40` |
+| Nginx 代理探针（FIN-012） | `NGINX_PROXY_VALIDATION_OK entry=nginx:8080 static=served+spa-fallback+immutable-assets security_headers=nosniff+csp+frame-deny bearer=forwarded+api-rejects-anonymous sse=streamed+chunked+frames-51+heartbeat-0.004s revocation=enforced` |
+| 一键起栈探针（FIN-012） | `ONE_COMMAND_UP_VALIDATION_OK project=resume-copilot-fin012-onecommand-probe entry_port=18081 seed=1\|5 cleanup=containers+volumes+networks-removed` |
+| `validate_api_runtime.ps1` | `API_RUNTIME_VALIDATION_OK image=resume-copilot-api:local status=ok` |
+| `validate_nonseed_flow.ps1` | `NON_SEED_FLOW_OK run=8e35ef438ad042f1bae9703047f66208 document=88030c33-14bd-4613-b74a-0164f765b12b profile=4b53042c-356f-4a5d-a8d2-51c2f0d756c9` |
+
+同一 run 里其余探针各打印一条 `*_OK`，共 17 条。**PostgreSQL / Redis 侧的集成在这里真实跑过**，不是跳过：
+
+```
+FIN-001 idempotency PostgreSQL integration tests passed.
+FIN-002 worker/scheduler Redis integration probe passed.
+FIN-006 maintenance integration tests passed.
+FIN-007 evaluation integration tests passed.
+FIN-007 offline evaluation gate passed.
+```
+
+### 4.2 CI 与本机数字对照（同一代码版本）
+
+| 项 | 本机（§2） | CI |
+|---|---|---|
+| `pytest -q` | 886 passed / 17 skipped | 885 passed / 18 skipped |
+| `vitest run` | 31 files / 239 passed | 31 files / 239 passed |
+| `mypy` | 247 文件 | `Success: no issues found in 247 source files` |
+| Playwright | 未执行 | 18 passed |
+
+`pytest` 两边总数一致（903），差别只有一条用例：`tests/unit/test_fin009_adr_contract.py:97` 在 CI 跳过、在本机通过。原因与影响见 §5 第 6 条。
+
+17 条 `DATABASE_URL` 集成用例在**两边都**跳过——CI 的 `pytest` 步骤同样不注入 `DATABASE_URL`——它们由同一 job 的活栈探针覆盖，证据是 4.1 里那五条 `FIN-00x … passed.`。
+
+本文件与评测报告所在的收口提交，与 `c23642ac` 的**代码部分完全一致**（只相差文档与报告的溯源块），因此这次 run 的结果对应发布候选本身。
 
 ## 5. 剩余限制（明确记录，不含糊）
 
@@ -82,3 +122,4 @@
 3. **浏览器与投屏检查未执行**：本机 Docker Desktop 起不来，Playwright 与投屏分辨率下的长文本 / 滚动区域检查均未做。因此 PORT-005 的两项验收保持未勾选，不按「组件测试通过」推断浏览器表现。
 4. **录屏与截图未产出**：同上，无法起栈即无法录制。演示脚本的 5 分钟录屏版脚本已就绪，待可运行环境补录。
 5. **`huawei` 远端未同步**：该远端的 `main` 停在 `99a30ab`（初始骨架）且与本地历史分叉（1 / 90），不是快进关系，未在本次发布中推送。需要时单独决定合并策略。
+6. **CI 里 `requirements.lock` 的 LangGraph 断言被跳过**：`pytest -q` 由 `Invoke-BackendTool`（`scripts/project.ps1:240`）在**后端开发镜像**内执行——`docker run --rm <dev image> pytest -q`，没有挂载工作区——而 `deploy/docker/backend.Dockerfile` 的开发阶段只 `COPY requirements-dev.lock`（第 11 行），`requirements.lock` 仅出现在运行阶段（第 33 行）。于是 `tests/unit/test_fin009_adr_contract.py:97` 的 `test_no_langgraph_dependency_is_declared[requirements.lock]` 在 CI 报 `requirements.lock not present in this checkout` 并跳过：ADR-0001 §2.1「运行时不声明 LangGraph」这条守卫，在 CI 里对**唯一真正定义运行时依赖的那个文件**没有生效（另外两个参数 `pyproject.toml`、`requirements-dev.lock` 正常断言）。本轮发布候选在这一条上**是被验证过的**——本机全量 `pytest` 执行了它并通过（§2）——但后续任何只改 `requirements.lock` 的改动都可能绕过 CI。**未在本轮修复**：改 Dockerfile 会改变门禁本身，而本机无 Docker、无法自验证，因此留作独立改动；最小修法是给开发阶段加一行 `COPY requirements.lock ./`。

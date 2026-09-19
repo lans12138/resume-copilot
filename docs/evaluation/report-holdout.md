@@ -2,8 +2,8 @@
 
 ## 溯源
 
-- 代码版本：`d5b949e7`
-- 生成时间：`2026-09-19T10:38:39Z`（UTC）
+- 代码版本：`c23642ac`
+- 生成时间：`2026-09-19T12:53:03Z`（UTC）
 - 生成命令：`python scripts/run_evaluation.py --k 5 --split holdout --output docs/evaluation/report-holdout.md`
 
 报告只描述上面这一次运行：换了提交、换了数据集版本或换了网关，数字都要重新测，不能与旧报告并列比较。
@@ -75,7 +75,7 @@ Recall@5 **0.625**（上限 0.833）｜MRR **1.000**｜nDCG@5 **0.815**。
 | out-of-vocabulary-skills@data-platform | 抽取 | skills | grpc,kotlin,python,sql | python,sql |
 | out-of-vocabulary-skills@frontend-web | 抽取 | skills | grpc,kotlin,react,typescript | react,typescript |
 
-总耗时 0.56 秒。
+总耗时 0.64 秒。
 
 ### 注入（原始 clean / injected 文本对）
 
@@ -88,7 +88,7 @@ Recall@5 **0.625**（上限 0.833）｜MRR **1.000**｜nDCG@5 **0.815**。
 
 确定性替身不读取文档中的指令，其「模型遵循」计数只反映替身词表能读到哪些字面词，不能外推为真实模型的抗注入能力；本节可直接引用的是系统侧零放行。
 
-总耗时 0.27 秒。
+总耗时 0.32 秒。
 
 ### 耗时与用量
 
