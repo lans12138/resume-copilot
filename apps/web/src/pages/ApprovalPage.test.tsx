@@ -1,4 +1,5 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -192,5 +193,49 @@ describe("ApprovalPage", () => {
 
     // And the panel that used to carry the action name no longer does.
     expect(panel("动作差异")).not.toHaveTextContent("更新申请状态")
+  })
+
+  // The two specs that approve an untouched approval asserted on the proposal's own
+  // status token. It used to be printed raw; it is now the rendered parameter, which
+  // is a different string, and the *count* of that string depends on this panel
+  // falling back to the original — so both facts are pinned together.
+  it("renders an untouched approval's parameters as unchanged, on both sides", async () => {
+    stubApproval([approval("PENDING")])
+    renderPage()
+
+    const diff = within(await screen.findByRole("region", { name: "动作差异" }))
+    // `final_params` is null until someone edits; that is "nothing changed yet", not
+    // "everything was deleted". A `已删除` badge here would tell the reviewer the
+    // opposite of the truth about what they are about to authorise.
+    expect(diff.queryByText("已删除")).not.toBeInTheDocument()
+    expect(diff.getByText("未改动")).toBeInTheDocument()
+    // Both columns carry it, which is why a spec cannot address it with a bare
+    // `getByText` — Playwright's strict mode rejects the second match.
+    expect(diff.getAllByText("已入围（SHORTLISTED）")).toHaveLength(2)
+    expect(diff.queryByText("—")).not.toBeInTheDocument()
+  })
+
+  it("names the status a submitted decision reached, in words", async () => {
+    // The POST answers with the approval it just decided, so the notice reports that
+    // status — `EXECUTED` for the first gate, because the side effect is applied
+    // inside the request (`ApplicationRunService.decide_approval`).
+    stubApproval([approval("PENDING"), approval("EXECUTED")])
+    renderPage()
+
+    await userEvent.click(await screen.findByRole("button", { name: "通过" }))
+
+    // The label, not the token: `approval.ts` translates every status for the reader,
+    // and the browser specs asserted the raw token until the translation landed.
+    expect(await screen.findByText("决策已提交，当前状态：已执行")).toBeInTheDocument()
+    expect(screen.queryByText(/决策已提交，当前状态：EXECUTED/)).not.toBeInTheDocument()
+  })
+
+  it("says a rejected decision wrote nothing, in words", async () => {
+    stubApproval([approval("PENDING"), approval("REJECTED")])
+    renderPage()
+
+    await userEvent.click(await screen.findByRole("button", { name: "驳回" }))
+
+    expect(await screen.findByText("决策已提交，当前状态：已驳回")).toBeInTheDocument()
   })
 })

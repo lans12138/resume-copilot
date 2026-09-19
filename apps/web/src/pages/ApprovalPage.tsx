@@ -135,7 +135,16 @@ export function ApprovalPage() {
 
         <section className="panel" aria-label="动作差异">
           <div className="section-heading"><div><p className="eyebrow">Action diff</p><h2>原提案与参数</h2></div></div>
-          <ActionDiff originalParams={approval.original_params} finalParams={displayFinal} />
+          {/* `final_params` is null until someone edits the proposal — that is what the
+              "参数已被人工修改" line above reads it as, and what `_resolve_final_params`
+              writes on a decision. It does *not* mean "every parameter was deleted", so
+              handing the null straight to the diff made an untouched approval render as
+              「已删除」 on every row, next to an empty 当前 column. Fall back to the
+              original, exactly as the sentence above already does. */}
+          <ActionDiff
+            originalParams={approval.original_params}
+            finalParams={displayFinal ?? approval.original_params}
+          />
         </section>
 
         <section className="panel" aria-label="当前版本">
