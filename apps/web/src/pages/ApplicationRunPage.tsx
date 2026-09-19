@@ -55,6 +55,38 @@ export function ApplicationRunPage() {
       {retry.error ? <ErrorNotice error={retry.error} /> : null}
       {cancel.error ? <ErrorNotice error={cancel.error} /> : null}
 
+      {/* PORT-005: each non-terminal or failed state says what it means and what to do
+          about it. "失败" beside a retry button leaves the operator to guess whether a
+          retry duplicates the side effect that already landed — it does not, and the
+          page should say so rather than let them find out. */}
+      {status === "FAILED" ? (
+        <div className="notice" role="status">
+          <strong>流程失败，可以重试</strong>
+          <span>
+            重试会以新的尝试重新执行；已经执行过的副作用带幂等键，不会重复写入。
+            {run.completion_reason ? ` 失败原因：${run.completion_reason}。` : ""}
+          </span>
+        </div>
+      ) : null}
+      {status === "WAITING_APPROVAL" ? (
+        <div className="notice" role="status">
+          <strong>流程在人工审批处暂停</strong>
+          <span>决策后才能继续；下方的「当前审批」写明将要执行的动作。长时间不决策会超时失效。</span>
+        </div>
+      ) : null}
+      {status === "COMPLETED" && run.completion_reason === "ACTION_REJECTED" ? (
+        <div className="notice" role="status">
+          <strong>审批被驳回，流程结束</strong>
+          <span>驳回不会写入任何数据；如需继续，请重新发起单人流程。</span>
+        </div>
+      ) : null}
+      {status === "CANCELLED" ? (
+        <div className="notice" role="status">
+          <strong>流程已取消</strong>
+          <span>取消不会回滚已经执行的副作用；如需继续，请重新发起单人流程。</span>
+        </div>
+      ) : null}
+
       <div className="run-stack">
         <RunTimeline runId={runId} runType="APPLICATION" onTerminal={() => queryClient.invalidateQueries({ queryKey: ["application-run", runId] })} />
 

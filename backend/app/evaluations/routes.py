@@ -51,6 +51,7 @@ from backend.app.evaluations.schemas import (
 )
 from backend.app.evaluations.service import EvaluationService
 from backend.app.evaluations.wiring import evaluation_enqueuer, evaluation_service
+from backend.app.observability.model_mode import describe_model_mode
 
 router = APIRouter(prefix="/api/v1/evaluations", tags=["evaluations"])
 
@@ -75,12 +76,18 @@ def _model_snapshot(settings: Settings) -> dict[str, object]:
     Records the model *names* and whether mock mode was active, never the API key or
     base URL: a verdict must be attributable without the snapshot becoming a place
     credentials leak into the database.
+
+    Built from the same view the on-screen provenance banner reads (PORT-005), so the
+    two can never disagree about which settings constitute "the model configuration".
+    Prompt and rule versions are a deliberate omission here — ``_prompt_versions``
+    records them separately, and duplicating them would give one fact two homes.
     """
+    mode = describe_model_mode(settings)
     return {
-        "chat_model": settings.chat_model,
-        "embedding_model": settings.embedding_model,
-        "embedding_dimension": settings.embedding_dimension,
-        "mock_model_mode": settings.mock_model_mode,
+        "chat_model": mode.chat_model,
+        "embedding_model": mode.embedding_model,
+        "embedding_dimension": mode.embedding_dimension,
+        "mock_model_mode": mode.mock_model_mode,
     }
 
 

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { BrowserRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom"
 import { useState } from "react"
 import { useAppStore } from "./state/session"
+import { ModelModeBanner } from "./components/ModelModeBanner"
 import { CandidatesPage } from "./pages/CandidatesPage"
 import { CandidateDetailPage } from "./pages/CandidateDetailPage"
 import { DocumentDetailPage } from "./pages/DocumentDetailPage"
@@ -42,6 +43,9 @@ function WorkspaceLayout() {
       </nav>
       <div className="user-menu"><span><strong>{user?.username}</strong><small>{user?.role === "HIRING_MANAGER" ? "招聘主管" : user?.role}</small></span><button className="button button-ghost button-small" type="button" onClick={logout}>退出登录</button></div>
     </header>
+    {/* PORT-005: the model mode is a property of the whole deployment, so it is stated
+        once here rather than repeated on every page that shows a model result. */}
+    <ModelModeBanner />
     <main className="workspace-content"><Outlet /></main>
   </div>
 }

@@ -32,6 +32,7 @@ from backend.app.interviews.routes import router as interviews_router
 from backend.app.job_applications.routes import router as application_runs_router
 from backend.app.jobs.routes import router as jobs_router
 from backend.app.match_run.routes import router as match_runs_router
+from backend.app.observability.routes import router as runtime_router
 from backend.app.reports.routes import router as reports_router
 from backend.app.sse.routes import router as sse_router
 
@@ -91,6 +92,7 @@ def create_app(
     application.include_router(interviews_router)
     application.include_router(evaluations_router)
     application.include_router(explanations_router)
+    application.include_router(runtime_router)
     application.include_router(sse_router)
 
     @application.get("/api/v1/health/live", tags=["health"])

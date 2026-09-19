@@ -232,4 +232,33 @@ describe("ClaimEvidencePanel", () => {
     render(<ClaimEvidencePanel reports={reports([claim()])} />)
     expect(screen.queryByText(/语义支持未经人工评测认定/)).toBeNull()
   })
+
+  // PORT-005: 「标明结果来源」 — a reader should know before scrolling whether any of
+  // the report is model commentary, rather than inferring it from the badges.
+  it("summarises the mix of rule verdicts and model commentary", () => {
+    render(
+      <ClaimEvidencePanel
+        reports={reports([
+          claim(),
+          // display_order is unique per report in the database
+          // (uq_report_claims_order), so the fixture must not reuse one.
+          claim({ claim_type: "model_conclusion", claim_text: "候选人经验与岗位描述接近。", source: "MODEL", support_level: "PARTIAL", display_order: 2 }),
+        ])}
+      />,
+    )
+
+    expect(screen.getByText("结果来源：规则判定 1 条 · 模型解释 1 条。")).toBeInTheDocument()
+  })
+
+  it("does not claim a model contribution a rule-only report does not have", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+
+    expect(screen.getByText("结果来源：规则判定 1 条。")).toBeInTheDocument()
+  })
+
+  it("says a report is empty rather than showing an empty provenance line", () => {
+    render(<ClaimEvidencePanel reports={reports([])} />)
+
+    expect(screen.getByText("本报告没有结论。")).toBeInTheDocument()
+  })
 })

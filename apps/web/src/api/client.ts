@@ -34,6 +34,7 @@ import type {
   MatchRunAccepted,
   MatchRunDetail,
   MatchRunList,
+  ModelModeOut,
   ReportList,
   RunAccepted,
   TokenResponse,
@@ -85,6 +86,8 @@ export const api = {
     return request<TokenResponse>("/auth/token", { method: "POST", body: new URLSearchParams({ username, password }) })
   },
   me: (token: string) => request<CurrentUser>("/auth/me", {}, token),
+  /** Which model mode this deployment runs in (PORT-005). */
+  getModelMode: (token: string) => request<ModelModeOut>("/runtime/model-mode", {}, token),
   listJobs(token: string, status: JobStatus | "ALL") {
     return request<JobList>(`/jobs${status === "ALL" ? "" : `?status=${status}`}`, {}, token)
   },

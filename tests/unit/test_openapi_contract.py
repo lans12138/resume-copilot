@@ -96,6 +96,7 @@ EXPECTED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/v1/match-runs/{run_id}/reports"),
         ("POST", "/api/v1/match-runs/{run_id}/retry"),
         ("GET", "/api/v1/metrics"),
+        ("GET", "/api/v1/runtime/model-mode"),
     }
 )
 

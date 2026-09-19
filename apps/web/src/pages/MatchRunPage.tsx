@@ -101,6 +101,21 @@ export function MatchRunPage() {
       </header>
       {retry.error ? <ErrorNotice error={retry.error} /> : null}
       {cancel.error ? <ErrorNotice error={cancel.error} /> : null}
+      {/* PORT-005: a failed batch analysis says what a retry does, and a running one
+          says what is happening, instead of leaving the reader to infer both from a
+          badge and a spinner. */}
+      {status === "FAILED" ? (
+        <div className="notice" role="status">
+          <strong>分析流程失败，可以重试</strong>
+          <span>重试会以新的尝试重新执行；本次分析只读取数据，不会修改候选人资料。</span>
+        </div>
+      ) : null}
+      {!terminal ? (
+        <div className="notice" role="status">
+          <strong>分析进行中</strong>
+          <span>候选人排名与报告会随执行完成自动出现，无需刷新页面；时间线会逐步显示每个节点。</span>
+        </div>
+      ) : null}
       {startApplication.error && !(
         startApplication.error instanceof ApiError &&
         startApplication.error.code === "APPLICATION_RUN_ALREADY_ACTIVE"

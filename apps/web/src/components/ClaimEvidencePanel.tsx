@@ -91,10 +91,28 @@ function ClaimCard({ claim, documentId }: { claim: ClaimOut; documentId: string 
   )
 }
 
+/** A one-line statement of where a report's conclusions came from (PORT-005). */
+function provenance(claims: ClaimOut[]): string {
+  const rule = claims.filter((claim) => claim.source === "RULE").length
+  const model = claims.filter((claim) => claim.source === "MODEL").length
+  const parts: string[] = []
+  if (rule > 0) parts.push(`规则判定 ${rule} 条`)
+  if (model > 0) parts.push(`模型解释 ${model} 条`)
+  if (parts.length === 0) return "本报告没有结论。"
+  return `结果来源：${parts.join(" · ")}。`
+}
+
 /** Evidence-backed reports for a MatchRun (detailed design §15.4). */
 export function ClaimEvidencePanel({ reports }: { reports: ReportList }) {
   if (reports.reports.length === 0) {
-    return <p className="muted">该分析流程尚未生成证据化报告。</p>
+    return (
+      <div className="empty-state">
+        <strong>该分析流程尚未生成证据化报告</strong>
+        <span>
+          报告在候选人评分完成后与流程状态一起提交。若流程已结束仍没有报告，请确认流程是否失败，或在候选人排名中查看各候选人的处理状态。
+        </span>
+      </div>
+    )
   }
   return (
     <div>
@@ -119,6 +137,10 @@ export function ClaimEvidencePanel({ reports }: { reports: ReportList }) {
             </span>
           </div>
           <p className="description-text">{report.summary}</p>
+          {/* PORT-005: 「标明结果来源」 — each claim already carries its own label, and
+              this says the mix up front so a reader knows before scrolling whether any
+              of the report is model commentary. */}
+          <p className="muted">{provenance(report.claims)}</p>
           <h3>结论与证据</h3>
           {report.claims
             .slice()

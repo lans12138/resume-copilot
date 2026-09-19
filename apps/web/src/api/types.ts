@@ -482,3 +482,22 @@ export interface EvaluationCreateRequest {
   kind: EvaluationKind
   config?: Record<string, unknown>
 }
+
+// ---------------------------------------------------------------------------
+// Runtime introspection (PORT-005)
+// ---------------------------------------------------------------------------
+
+/** Which model mode this deployment runs in, and which models it is configured for.
+ *
+ * Carries names and the mode flag only — never the API key or the base URL. The
+ * banner exists so a viewer can tell a real model's answer from a scripted one. */
+export interface ModelModeOut {
+  mock_model_mode: boolean
+  /** A phrase safe to show a viewer, e.g. 「Mock 模型（确定性假模型，不调用外部服务）」. */
+  source_label: string
+  chat_model: string
+  embedding_model: string
+  embedding_dimension: number
+  prompt_version: string
+  rule_version: string
+}
