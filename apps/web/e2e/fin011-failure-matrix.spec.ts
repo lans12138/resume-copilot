@@ -58,7 +58,15 @@ test.describe("FIN-011 approval decisions", () => {
     // The reason is rendered inside a sentence — `ApplicationRunPage.tsx:48` prints
     // "申请 {id} · 尝试 {n} · {completion_reason}" as one text run — so no element's
     // *whole* text is the bare token and `{ exact: true }` can never match it.
-    await expect(page.getByText(/ACTION_REJECTED/)).toBeVisible()
+    //
+    // It has to be scoped, though, for the same reason the status above is: PORT-005
+    // gave each timeline row a 技术详情 block that renders the event's raw payload
+    // (`RunTimeline.tsx:62-66`), and the terminal event's payload *is*
+    // `{"reason":"ACTION_REJECTED"}` (`agent/service.py:209`, written by the only
+    // `complete_run` caller, `approvals/service.py:289`). A bare `getByText` now
+    // resolves to the header sentence and that `<code>`. The header is the claim
+    // under test — the run's own summary of why it ended — so scope to it.
+    await expect(page.locator(".page-heading").getByText(/ACTION_REJECTED/)).toBeVisible()
     await expect(page.getByText("创建面试安排", { exact: true })).toHaveCount(0)
     await expect(page.getByText("尚未创建面试安排。", { exact: true })).toBeVisible()
     expect(pageErrors).toEqual([])

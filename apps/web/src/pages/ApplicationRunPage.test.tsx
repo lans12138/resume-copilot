@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest"
-import { render, screen, waitFor } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
@@ -51,7 +51,13 @@ vi.mock("../api/sse", () => ({
 import { api } from "../api/client"
 import { ApplicationRunPage } from "./ApplicationRunPage"
 
-function event(sequence: number, status: string, messageKey: string, node: string | null) {
+function event(
+  sequence: number,
+  status: string,
+  messageKey: string,
+  node: string | null,
+  payload: Record<string, unknown> = {},
+) {
   return {
     event_id: `e${sequence}`,
     run_id: "r1",
@@ -61,7 +67,7 @@ function event(sequence: number, status: string, messageKey: string, node: strin
     node,
     status,
     message_key: messageKey,
-    safe_payload: {},
+    safe_payload: payload,
     occurred_at: "2026-09-19T00:00:00Z",
   }
 }
@@ -157,5 +163,37 @@ describe("ApplicationRunPage run status", () => {
     expect(exact.length).toBeGreaterThanOrEqual(2)
     const inHeader = exact.filter((node) => node.closest(".detail-meta") !== null)
     expect(inHeader).toHaveLength(1)
+  })
+
+  // The same duplication, on the *reason* rather than the status. `approvals/service.py:289`
+  // is the only `complete_run` caller and it passes reason="ACTION_REJECTED";
+  // `agent/service.py:209` puts that straight into the terminal event's payload, and the
+  // timeline renders the payload raw inside 技术详情 (`RunTimeline.tsx:62-66` via
+  // `runTimeline.ts:273`). So the page states the reason twice, and the spec that checks
+  // "the run ended for this reason" has to scope to the header.
+  //
+  // Note the second match sits inside a collapsed `<details>`, so no reader ever sees two:
+  // Playwright's strict mode counts elements, not visible ones, which is exactly how this
+  // fails — as an ambiguity, not as a missing element.
+  it("states the completion reason in the header and again in the timeline detail", async () => {
+    EVENTS = [event(1, "COMPLETED", "run.rejected", null, { reason: "ACTION_REJECTED" })]
+    await renderRun({
+      run_id: "r1",
+      application_id: "a1",
+      attempt: 1,
+      status: "COMPLETED",
+      completion_reason: "ACTION_REJECTED",
+      current_approval: null,
+      question_set: null,
+      interview_id: null,
+      interview_status: null,
+      interview_external_id: null,
+    })
+
+    const header = document.querySelector(".page-heading") as HTMLElement
+    expect(header).not.toBeNull()
+    expect(within(header).getByText(/ACTION_REJECTED/)).toBeInTheDocument()
+
+    expect(screen.getAllByText(/ACTION_REJECTED/).length).toBeGreaterThanOrEqual(2)
   })
 })
