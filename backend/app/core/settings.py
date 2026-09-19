@@ -108,6 +108,13 @@ class Settings(BaseSettings):
     embedding_dimension: int = 1024
     embedding_batch_size: int = Field(default=16, gt=0, le=256)
     mock_model_mode: bool = True
+    # PORT-003: whether a MatchRun asks the model to explain each candidate's fit.
+    # A real switch rather than a code path, because the reason to turn it off is
+    # operational — an upstream that is rate limiting or down — and an operator
+    # should not need a deploy to stop paying for calls that cannot succeed. When
+    # off, every report still gets an explanation row marked MODEL_DISABLED, so
+    # "switched off" is distinguishable from "the model ran and said nothing".
+    explanation_enabled: bool = True
 
     top_k: int = Field(default=10, gt=0, le=100)
     rrf_k: int = Field(default=60, gt=0)

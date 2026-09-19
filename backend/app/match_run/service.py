@@ -45,6 +45,7 @@ from backend.app.agent.models import (
     RunType,
 )
 from backend.app.agent.repository import AgentRunRepository
+from backend.app.explanations.service import JobQueryProvider, MatchExplanationService
 from backend.app.match_run.models import MatchRun, MatchRunCandidate, ProcessingStatus
 from backend.app.match_run.repository import (
     MatchRunCandidateRepository,
@@ -163,6 +164,8 @@ class MatchRunService:
         fail_profiles: Set[UUID] | None = None,
         report_service: ReportService | None = None,
         evidence_provider: EvidenceProvider | None = None,
+        explanation_service: MatchExplanationService | None = None,
+        job_provider: JobQueryProvider | None = None,
     ) -> MatchRun:
         """Run the full graph for one MatchRun, terminating it on success/failure.
 
@@ -173,6 +176,12 @@ class MatchRunService:
         The caller has already *claimed* the run (the row is locked and its status
         permits execution); this method takes over from there and is responsible for
         the ``CREATED``/``FAILED`` → ``RUNNING`` transition.
+
+        Report and explanation generation run *before* ``aggregate_run``, while the
+        run is still ``RUNNING``. They used to run after the terminal event was
+        appended, which meant a derived artifact could appear — or fail — after the
+        run had already been declared finished. Anything the timeline shows as part
+        of a run has to happen before the run says it is done.
         """
         faults = fail_profiles or set()
         await self._enter_running(run)
@@ -205,11 +214,12 @@ class MatchRunService:
         )
 
         failed_ids = await self._fan_out(run, match_run, snapshot, faults)
+        status = _aggregate_status(snapshot, failed_ids)
 
-        status = await self._aggregate(run, snapshot, failed_ids)
         # Gate G4: a successful MatchRun persists evidence-backed reports for its
-        # COMPLETED candidates. Report generation is optional so IMP-019 callers
-        # (and fault-injection tests) are unaffected; a failed run writes none.
+        # COMPLETED candidates, and PORT-003 adds model explanations on top.
+        # Both are optional so IMP-019 callers (and fault-injection tests) are
+        # unaffected; a failed run writes neither.
         if (
             status == RunStatus.COMPLETED
             and report_service is not None
@@ -222,6 +232,17 @@ class MatchRunService:
                 candidates=candidates,
                 evidence=evidence_provider,
             )
+            if explanation_service is not None and job_provider is not None:
+                await self._node(run, "explain_matches", {"candidates": len(candidates)})
+                await explanation_service.generate_for_run(
+                    run=run,
+                    match_run=match_run,
+                    candidates=candidates,
+                    evidence=evidence_provider,
+                    job_provider=job_provider,
+                )
+
+        await self._aggregate(run, snapshot, status, failed_ids)
         return match_run
 
     async def _retrieve_candidates(
@@ -356,7 +377,11 @@ class MatchRunService:
         return failed_ids
 
     async def _aggregate(
-        self, run: AgentRun, snapshot: RankingSnapshot, failed_ids: list[UUID]
+        self,
+        run: AgentRun,
+        snapshot: RankingSnapshot,
+        status: RunStatus,
+        failed_ids: list[UUID],
     ) -> RunStatus:
         await self._append(
             run,
@@ -366,13 +391,6 @@ class MatchRunService:
             message_key="node.aggregate_run.started",
             safe_payload={},
         )
-        if not snapshot.fused:
-            # No candidates hit: allowed to complete with an empty summary.
-            status = RunStatus.COMPLETED
-        elif failed_ids and len(failed_ids) == len(snapshot.fused):
-            status = RunStatus.FAILED
-        else:
-            status = RunStatus.COMPLETED
         await self._append(
             run,
             AgentEventType.NODE_COMPLETED,
@@ -469,6 +487,26 @@ class MatchRunService:
         if self._notifier is not None:
             await self._notifier.publish(run.id, event.sequence)
         return event
+
+
+def _aggregate_status(snapshot: RankingSnapshot, failed_ids: list[UUID]) -> RunStatus:
+    """Decide the run's terminal status before any derived artifact is written.
+
+    Extracted from ``_aggregate`` so report and explanation generation can be
+    gated on the *outcome* while the run is still ``RUNNING`` — a derived artifact
+    must not be produced for a run that is about to be declared failed, and it must
+    not appear after the run has already been declared finished.
+
+    A run where *every* candidate failed points at a shared upstream (model
+    gateway, retrieval) rather than at the candidates, which is why only the
+    all-failed case is a run failure (§10.2).
+    """
+    if not snapshot.fused:
+        # No candidates hit: allowed to complete with an empty summary.
+        return RunStatus.COMPLETED
+    if failed_ids and len(failed_ids) == len(snapshot.fused):
+        return RunStatus.FAILED
+    return RunStatus.COMPLETED
 
 
 def _hard_rule_json(bundle: HardRuleBundle | None) -> dict[str, object]:

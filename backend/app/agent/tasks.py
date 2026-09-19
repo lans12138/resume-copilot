@@ -49,6 +49,7 @@ from backend.app.auth.models import User
 from backend.app.auth.tokens import Actor
 from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.core.settings import get_settings
+from backend.app.explanations.wiring import build_explanation_service
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.job_applications.repository import SqlApplicationRunRepository
 from backend.app.job_applications.wiring import build_application_run_service
@@ -56,6 +57,7 @@ from backend.app.match_run.repository import SqlMatchRunRepository
 from backend.app.match_run.wiring import build_match_run_service
 from backend.app.reports.repository import SqlReportRepository
 from backend.app.reports.service import ReportService
+from backend.app.retrieval.repository import SqlRetrievalRepository
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +185,13 @@ async def _execute_match_run_async(
             match_run=match_run,
             report_service=ReportService(SqlReportRepository(session)),
             evidence_provider=SqlEvidenceChunkRepository(session),
+            # PORT-003: the model explains each completed candidate's fit. It runs
+            # inside the same transaction as the reports it annotates, and its own
+            # failures are recorded on the explanation row rather than raised —
+            # a model outage must not fail a run whose deterministic verdict is
+            # already computed (BR-001).
+            explanation_service=build_explanation_service(session, get_settings()),
+            job_provider=SqlRetrievalRepository(session),
         )
         # One commit for the whole pass: the claim's row lock is released only when
         # the run has reached its terminal state, so a duplicate delivery can never

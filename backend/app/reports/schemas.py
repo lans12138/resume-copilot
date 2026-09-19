@@ -22,12 +22,20 @@ class EvidenceOut(BaseModel):
 
 
 class ClaimOut(BaseModel):
-    """A deterministic conclusion with its (validated) evidence."""
+    """One conclusion with its (validated) evidence.
+
+    ``source`` tells a reader whether the claim is a deterministic verdict
+    (``RULE``) or model commentary (``MODEL``). It is part of the response rather
+    than something the client infers from ``claim_type``, because the two carry
+    different authority (BR-001 / BR-002) and a client that had to pattern-match
+    a string prefix to tell them apart would eventually get it wrong.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
     claim_type: str
     claim_text: str
+    source: str
     impact_level: str
     support_level: str
     confidence_note: str | None = None
@@ -77,6 +85,7 @@ def _report_out(view: ReportView) -> ReportOut:
             ClaimOut(
                 claim_type=claim_view.claim.claim_type,
                 claim_text=claim_view.claim.claim_text,
+                source=claim_view.claim.source.value,
                 impact_level=claim_view.claim.impact_level.value,
                 support_level=claim_view.claim.support_level.value,
                 confidence_note=claim_view.claim.confidence_note,

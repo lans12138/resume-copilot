@@ -16,17 +16,42 @@ const impactLabel: Record<string, string> = {
   LOW: "低",
 }
 
+// PORT-003: a report mixes two kinds of statement and they must never read alike.
+// A RULE claim is a deterministic verdict over confirmed profile fields (BR-002);
+// a MODEL claim is commentary whose citations the server verified but whose
+// judgement carries no authority (BR-001). Naming the source is the whole point —
+// a reader who cannot tell them apart will read the model's wording as the verdict.
+const sourceLabel: Record<string, string> = {
+  RULE: "规则判定",
+  MODEL: "模型解释",
+}
+const sourceTone: Record<string, string> = {
+  RULE: "neutral",
+  MODEL: "muted",
+}
+
 function ClaimCard({ claim }: { claim: ClaimOut }) {
   return (
     <article className="claim">
       <div className="claim-head">
         <strong>{claim.claim_text}</strong>
+        <span className={`badge badge-${sourceTone[claim.source] ?? "muted"}`}>
+          {sourceLabel[claim.source] ?? claim.source}
+        </span>
         <span className={`badge badge-${supportTone[claim.support_level] ?? "muted"}`}>
           {supportLabel[claim.support_level] ?? claim.support_level}
         </span>
         <span className="badge badge-neutral">影响：{impactLabel[claim.impact_level] ?? claim.impact_level}</span>
         {claim.confidence_note ? <span className="badge badge-muted">{claim.confidence_note}</span> : null}
       </div>
+      {claim.source === "MODEL" ? (
+        // Say the ceiling out loud. A verified citation proves the quote is real,
+        // not that it means what the model says it means (§9.4), so a model claim
+        // can never be SUPPORTED and a reader has to be told why.
+        <p className="muted">
+          模型解释：引用已通过服务端校验，但语义支持未经人工评测认定，因此不会显示为“支持”。
+        </p>
+      ) : null}
       {claim.evidences.length === 0 ? (
         // PORT-002: a claim with no excerpt is a downgrade, not a rendering gap —
         // say so, or "部分支持" next to an empty list reads like a missing row.

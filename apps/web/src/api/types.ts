@@ -218,6 +218,8 @@ export interface EvidenceOut {
 export interface ClaimOut {
   claim_type: string
   claim_text: string
+  /** "RULE" is a deterministic verdict; "MODEL" is verified model commentary. */
+  source: string
   impact_level: string
   support_level: string
   confidence_note: string | null
@@ -237,6 +239,33 @@ export interface ReportOut {
   claims: ClaimOut[]
 }
 export interface ReportList { reports: ReportOut[] }
+
+/** The model call record for one candidate's report (PORT-003).
+ *
+ * `reason_code` is the part the report cannot show: whether the model ran at all,
+ * and if not, why. Without it, "no model claims" and "the upstream was rate
+ * limiting us" look identical. */
+export interface ExplanationOut {
+  id: string
+  run_id: string
+  application_id: string
+  candidate_profile_id: string
+  status: string
+  reason_code: string
+  summary: string | null
+  model: string | null
+  prompt_version: string
+  rule_version: string
+  latency_ms: number
+  attempts: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  conclusion_count: number
+  dropped_conclusion_count: number
+  illegal_citation_count: number
+  created_at: string
+}
+export interface ExplanationList { explanations: ExplanationOut[] }
 
 // --- Documents & profile review (FIN-004) ---
 export type DocumentStatus =

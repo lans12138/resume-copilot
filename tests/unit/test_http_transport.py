@@ -17,12 +17,15 @@ import httpx2
 import pytest
 
 from backend.app.infrastructure.http_transport import (
+    AttemptRecord,
     HttpxJsonSender,
     JsonTransport,
     PermanentTransportError,
     RawResponseBody,
     ResponseSchemaError,
     RetryableTransportError,
+    TransportConnectionError,
+    TransportTimeoutError,
     parse_json_object,
 )
 
@@ -120,6 +123,72 @@ def test_timeout_is_retryable() -> None:
     result = _run(_transport(recorder).post_json("https://x.test/v1/chat", {}, timeout=5))
     assert result == {"ok": True}
     assert recorder.calls == 2
+
+
+def test_timeout_raises_the_specific_timeout_subtype() -> None:
+    """PORT-003 records a reason code per failed call, so the cause must be typed.
+
+    Matching on the message text would silently misclassify the first time someone
+    reworded it; the subtype is what makes TIMEOUT distinguishable from a 5xx.
+    """
+    recorder = Recorder([httpx2.ReadTimeout("slow")])
+    with pytest.raises(TransportTimeoutError) as caught:
+        _run(
+            _transport(recorder, max_attempts=1).post_json(
+                "https://x.test/v1/chat", {}, timeout=5
+            )
+        )
+    assert caught.value.retryable is True
+
+
+def test_connect_error_raises_the_specific_connection_subtype() -> None:
+    recorder = Recorder([httpx2.ConnectError("refused")])
+    with pytest.raises(TransportConnectionError):
+        _run(
+            _transport(recorder, max_attempts=1).post_json(
+                "https://x.test/v1/chat", {}, timeout=5
+            )
+        )
+
+
+def test_attempt_record_counts_a_successful_call() -> None:
+    recorder = Recorder([_status(503), _ok()])
+    record = AttemptRecord()
+    _run(
+        _transport(recorder).post_json(
+            "https://x.test/v1/chat", {}, timeout=5, attempts=record
+        )
+    )
+    assert record.attempts == 2
+
+
+def test_attempt_record_is_written_on_the_raising_path_too() -> None:
+    """ "This took 3 attempts and still failed" is exactly the number to keep."""
+    recorder = Recorder([_status(503)])
+    record = AttemptRecord()
+    with pytest.raises(RetryableTransportError):
+        _run(
+            _transport(recorder, max_attempts=3).post_json(
+                "https://x.test/v1/chat", {}, timeout=5, attempts=record
+            )
+        )
+    assert record.attempts == 3
+
+
+def test_attempt_records_are_per_request_not_per_transport() -> None:
+    """A transport is shared across concurrent calls, so the counter cannot live on it.
+
+    Two calls through one transport must not see each other's retries, or a
+    concurrent run would attribute its neighbour's latency to its own output.
+    """
+    recorder = Recorder([_status(503), _ok(), _ok()])
+    transport = _transport(recorder)
+    first = AttemptRecord()
+    second = AttemptRecord()
+    _run(transport.post_json("https://x.test/v1/chat", {}, timeout=5, attempts=first))
+    _run(transport.post_json("https://x.test/v1/chat", {}, timeout=5, attempts=second))
+    assert first.attempts == 2
+    assert second.attempts == 1
 
 
 def test_connect_error_is_retryable() -> None:

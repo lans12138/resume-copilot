@@ -25,6 +25,7 @@ from backend.app.core.middleware import MetricsMiddleware, RequestContextMiddlew
 from backend.app.core.settings import Settings, get_settings
 from backend.app.documents.routes import router as documents_router
 from backend.app.evaluations.routes import router as evaluations_router
+from backend.app.explanations.routes import router as explanations_router
 from backend.app.idempotency.errors import IdempotencyReplay
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.interviews.routes import router as interviews_router
@@ -89,6 +90,7 @@ def create_app(
     application.include_router(match_runs_router)
     application.include_router(interviews_router)
     application.include_router(evaluations_router)
+    application.include_router(explanations_router)
     application.include_router(sse_router)
 
     @application.get("/api/v1/health/live", tags=["health"])

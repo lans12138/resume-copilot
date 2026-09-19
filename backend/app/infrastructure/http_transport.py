@@ -73,6 +73,21 @@ class RetryableTransportError(TransportError):
     retryable = True
 
 
+class TransportTimeoutError(RetryableTransportError):
+    """The request timed out before the upstream answered.
+
+    A distinct type rather than a message convention, because the caller has to
+    *report* the cause (PORT-003 records a reason code per failed model call) and
+    matching on ``str(error)`` would silently misclassify the first time someone
+    reworded a message. ``RetryableTransportError`` is the supertype, so the retry
+    policy above is unchanged.
+    """
+
+
+class TransportConnectionError(RetryableTransportError):
+    """A network-level failure: connect, read, write or protocol error."""
+
+
 class PermanentTransportError(TransportError):
     """The request will fail identically forever (4xx, malformed body, bad schema)."""
 
@@ -108,6 +123,28 @@ class JsonSender(Protocol):
     ) -> tuple[int, Mapping[str, str], Any]:
         """Return ``(status_code, response_headers, decoded_body)``."""
         ...
+
+
+class AttemptRecord:
+    """Caller-owned counter for how many attempts one request took.
+
+    Retry counts are an observability requirement (§PORT-003: "记录…重试"), but
+    the transport returns only the body, and a transport instance is shared
+    across concurrent calls — so an attribute on the transport would report one
+    call's retries to another. The counter is therefore created by the caller and
+    passed in, which makes it local to the request by construction.
+
+    It is also written on the failure path, because "this took 3 attempts and
+    still failed" is exactly the number an operator needs.
+    """
+
+    __slots__ = ("attempts",)
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def __repr__(self) -> str:
+        return f"AttemptRecord(attempts={self.attempts})"
 
 
 class RawResponseBody:
@@ -253,17 +290,23 @@ class JsonTransport:
         *,
         headers: Mapping[str, str] | None = None,
         timeout: float,
+        attempts: AttemptRecord | None = None,
     ) -> Any:
         """Send a JSON body and return the decoded response body.
 
         Raises :class:`RetryableTransportError` or
         :class:`PermanentTransportError`; never returns on a non-2xx status.
+
+        ``attempts``, when supplied, is updated on every path out — including the
+        raising one — so the caller can record how much retry budget a call spent.
         """
         request_headers = {"content-type": "application/json", **(headers or {})}
         last_error: TransportError | None = None
 
         for attempt_no in range(self._max_attempts):
             attempts_made = attempt_no + 1
+            if attempts is not None:
+                attempts.attempts = attempts_made
             # Rebound every iteration, and left empty on the network-exception
             # path, so a server-provided Retry-After can never be carried over
             # from an earlier attempt.
@@ -273,11 +316,13 @@ class JsonTransport:
                     url, payload, headers=request_headers, timeout=timeout
                 )
             except httpx2.TimeoutException as error:
-                last_error = RetryableTransportError(f"upstream timed out: {error}")
+                last_error = TransportTimeoutError(f"upstream timed out: {error}")
             except httpx2.TransportError as error:
                 # Covers connect/read/write/protocol errors: all are network-level
                 # and therefore worth another attempt.
-                last_error = RetryableTransportError(f"upstream connection failed: {error}")
+                last_error = TransportConnectionError(
+                    f"upstream connection failed: {error}"
+                )
             else:
                 error_from_status = _classify_status(status_code, body)
                 if error_from_status is None:
@@ -366,6 +411,7 @@ def validate_response(model: type[Any], body: Any) -> Any:
 
 
 __all__ = [
+    "AttemptRecord",
     "HttpxJsonSender",
     "JsonSender",
     "JsonTransport",
@@ -373,7 +419,9 @@ __all__ = [
     "RawResponseBody",
     "ResponseSchemaError",
     "RetryableTransportError",
+    "TransportConnectionError",
     "TransportError",
+    "TransportTimeoutError",
     "parse_json_object",
     "validate_response",
 ]

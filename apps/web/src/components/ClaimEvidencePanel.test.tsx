@@ -7,6 +7,7 @@ function claim(overrides: Partial<ClaimOut> = {}): ClaimOut {
   return {
     claim_type: "hard_rule:years_experience",
     claim_text: "满足years_experience（观测值 5.0，要求 3.0）",
+    source: "RULE",
     impact_level: "MEDIUM",
     support_level: "SUPPORTED",
     confidence_note: "result=PASS; evidence=located",
@@ -110,5 +111,37 @@ describe("ClaimEvidencePanel", () => {
   it("says so when the run has produced no reports yet", () => {
     render(<ClaimEvidencePanel reports={{ reports: [] }} />)
     expect(screen.getByText(/尚未生成证据化报告/)).toBeTruthy()
+  })
+
+  it("names a rule claim as a rule verdict", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+    expect(screen.getByText("规则判定")).toBeTruthy()
+    expect(screen.queryByText("模型解释")).toBeNull()
+  })
+
+  it("marks a model claim and says why it is capped at partial support", () => {
+    // PORT-003: BR-001/BR-002 — a reader who cannot tell model commentary from a
+    // deterministic verdict will read the model's wording as the decision.
+    render(
+      <ClaimEvidencePanel
+        reports={reports([
+          claim({
+            claim_type: "model_conclusion",
+            claim_text: "岗位要求的 Python 可在候选人原文中定位到。",
+            source: "MODEL",
+            support_level: "PARTIAL",
+            confidence_note: "source=model; citations=1; semantic support not evaluated",
+          }),
+        ])}
+      />,
+    )
+    expect(screen.getByText("模型解释")).toBeTruthy()
+    expect(screen.queryByText("规则判定")).toBeNull()
+    expect(screen.getByText(/引用已通过服务端校验/)).toBeTruthy()
+  })
+
+  it("does not show the model caveat on a rule claim", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+    expect(screen.queryByText(/语义支持未经人工评测认定/)).toBeNull()
   })
 })

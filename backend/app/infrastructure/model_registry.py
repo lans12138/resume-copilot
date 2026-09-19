@@ -15,6 +15,7 @@ from backend.app.auth import models as auth_models
 from backend.app.candidates import models as candidate_models
 from backend.app.documents import models as document_models
 from backend.app.evaluations import models as evaluation_models
+from backend.app.explanations import models as explanation_models
 from backend.app.idempotency import models as idempotency_models
 from backend.app.infrastructure.database import Base
 from backend.app.interviews import models as interview_models
@@ -43,6 +44,7 @@ MIGRATED_MODEL_TABLES = frozenset(
         "job_assignments",
         "job_versions",
         "jobs",
+        "match_explanations",
         "match_reports",
         "match_run_candidates",
         "match_runs",
@@ -60,6 +62,7 @@ _LOADED_MODEL_MODULES = (
     candidate_models,
     document_models,
     evaluation_models,
+    explanation_models,
     idempotency_models,
     interview_models,
     application_models,

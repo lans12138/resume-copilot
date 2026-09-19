@@ -676,6 +676,8 @@ partition "LangGraph 图" {
   fork again
     :persist_candidate_report 持久化报告/Claim/Evidence;
   end fork
+  :generate_reports 生成证据化报告;
+  :explain_matches 模型解释(校验引用后落库);
   :aggregate_run 汇总运行结果;
 }
 

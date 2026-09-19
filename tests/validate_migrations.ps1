@@ -120,7 +120,7 @@ try {
             '-v', 'ON_ERROR_STOP=1', '-tAc', 'SELECT version_num FROM alembic_version;'
         ) | Select-Object -Last 1
     ).Trim()
-    if ($revision -ne '0012_evaluation_tables') {
+    if ($revision -ne '0013_match_explanations') {
         throw "Unexpected Alembic revision: $revision"
     }
 
@@ -145,6 +145,7 @@ FROM (VALUES
     ('job_assignments'),
     ('job_versions'),
     ('jobs'),
+    ('match_explanations'),
     ('match_reports'),
     ('match_run_candidates'),
     ('match_runs'),
@@ -236,7 +237,7 @@ WHERE to_regclass('public.' || name) IS NULL;
 
     Write-Output (
         'MIGRATION_VALIDATION_OK ' +
-        "revision=$revision tables=25 workflow_fks=7 vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
+        "revision=$revision tables=26 workflow_fks=7 vector_dimension=$vectorDimension readiness=ready degradation=503 recovery=ready"
     )
 }
 finally {

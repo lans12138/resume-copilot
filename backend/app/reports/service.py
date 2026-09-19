@@ -22,6 +22,7 @@ from backend.app.match_run.models import MatchRun, MatchRunCandidate, Processing
 from backend.app.reports.evidence_binding import bind_evidence, merge_evidence
 from backend.app.reports.models import (
     ClaimEvidence,
+    ClaimSource,
     ClaimView,
     ImpactLevel,
     MatchReport,
@@ -231,6 +232,12 @@ def build_candidate_report(
                     report_id=report.id,
                     claim_type=f"hard_rule:{rule_id_text}",
                     claim_text=rule_text,
+                    # Set explicitly rather than relying on the column default:
+                    # the default only applies at INSERT, so an unflushed claim
+                    # would carry ``source=None`` and anything that partitions on
+                    # it (the explanation prompt's fixed-context block) would see
+                    # no rule claims at all.
+                    source=ClaimSource.RULE,
                     impact_level=rule_impact,
                     support_level=rule_support,
                     confidence_note=(
@@ -261,6 +268,7 @@ def build_candidate_report(
         report_id=report.id,
         claim_type="hard_rule_overall",
         claim_text=overall_text,
+        source=ClaimSource.RULE,
         impact_level=overall_impact,
         support_level=overall_support,
         confidence_note=(

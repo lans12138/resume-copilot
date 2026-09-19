@@ -34,9 +34,13 @@ from pydantic import ValidationError
 from backend.app.candidates.schemas import CandidateProfileDraft
 from backend.app.core.settings import Settings
 from backend.app.documents.parsers import ParsedBlock
+from backend.app.infrastructure.chat_completion import (
+    CHAT_COMPLETIONS_PATH,
+    ChatCompletionShapeError,
+    extract_message_content,
+)
 from backend.app.infrastructure.http_transport import (
     JsonTransport,
-    ResponseSchemaError,
     parse_json_object,
 )
 from backend.app.infrastructure.prompts import (
@@ -50,33 +54,6 @@ logger = logging.getLogger(__name__)
 # Bounded prompt budget. The model snapshot records this, so a change here is a
 # change in what an evaluation case actually measured.
 MAX_PROMPT_CHARS = 24_000
-
-CHAT_COMPLETIONS_PATH = "/chat/completions"
-
-
-class ChatCompletionShapeError(ResponseSchemaError):
-    """The provider returned 200 but the completion envelope was unusable."""
-
-
-def _extract_message_content(body: dict[str, Any]) -> str:
-    """Pull the assistant text out of an OpenAI-compatible completion envelope.
-
-    Kept separate and total: every branch either returns a string or raises a
-    permanent shape error, so the caller never has to defend against ``None``.
-    """
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise ChatCompletionShapeError("completion response carried no choices")
-    first = choices[0]
-    if not isinstance(first, dict):
-        raise ChatCompletionShapeError("completion choice was not an object")
-    message = first.get("message")
-    if not isinstance(message, dict):
-        raise ChatCompletionShapeError("completion choice carried no message")
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise ChatCompletionShapeError("completion message carried no text content")
-    return content
 
 
 def parse_structured_reply(content: str) -> CandidateProfileDraft:
@@ -196,7 +173,7 @@ class QwenChatGateway:
             timeout=self._timeout,
         )
         envelope = parse_json_object(body)
-        return _extract_message_content(dict(envelope))
+        return extract_message_content(dict(envelope))
 
 
 def build_qwen_chat_gateway(

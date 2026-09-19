@@ -65,6 +65,26 @@ class SupportLevel(StrEnum):
     INSUFFICIENT = "INSUFFICIENT"
 
 
+class ClaimSource(StrEnum):
+    """Who produced a claim.
+
+    A report mixes two kinds of statement and they must never be confused: a
+    ``RULE`` claim is a deterministic verdict over confirmed profile fields
+    (BR-002 — the only thing that may move a candidate out of the shortlist), and
+    a ``MODEL`` claim is explanatory commentary whose citations the server has
+    verified but whose *judgement* carries no authority (BR-001).
+
+    Recorded as a column rather than a ``claim_type`` prefix so the distinction is
+    a contract the database enforces and the UI can render without parsing
+    strings. The default is ``RULE``: every claim written before PORT-003 is a
+    deterministic one, and a migration that had to guess would be able to get
+    that wrong.
+    """
+
+    RULE = "RULE"
+    MODEL = "MODEL"
+
+
 class MatchReport(Base):
     """One candidate's scored, evidence-backed decision for a MatchRun."""
 
@@ -118,6 +138,17 @@ class ReportClaim(Base):
     report_id: Mapped[UUID] = mapped_column(nullable=False)
     claim_type: Mapped[str] = mapped_column(String(64), nullable=False)
     claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[ClaimSource] = mapped_column(
+        Enum(
+            ClaimSource,
+            native_enum=False,
+            create_constraint=False,
+            length=16,
+        ),
+        nullable=False,
+        default=ClaimSource.RULE,
+        server_default=ClaimSource.RULE.value,
+    )
     impact_level: Mapped[ImpactLevel] = mapped_column(
         Enum(
             ImpactLevel,
