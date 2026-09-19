@@ -8,7 +8,12 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $backendRuntimeImage = 'resume-copilot-api:local'
 
 function Invoke-Docker {
-    param([Parameter(Mandatory)][string[]] $Arguments)
+    param(
+        [Parameter(Mandatory)][string[]] $Arguments,
+        # Most calls must succeed. The diagnostic probe below is the exception:
+        # its *expected* outcome is a classified failure, which is a non-zero exit.
+        [int[]] $AllowedExitCodes = @(0)
+    )
     # Merge native stderr as data, not as a terminating error (PS 5.1 turns every
     # stderr line of a native command into an ErrorRecord, and
     # ``$ErrorActionPreference = 'Stop'`` would abort the probe mid-build).
@@ -21,7 +26,7 @@ function Invoke-Docker {
     finally {
         $ErrorActionPreference = $previousPreference
     }
-    if ($exitCode -ne 0) {
+    if ($exitCode -notin $AllowedExitCodes) {
         throw "Docker command failed: docker $($Arguments -join ' ')`n$($output -join "`n")"
     }
     return @($output | ForEach-Object { $_.ToString() })
@@ -112,7 +117,10 @@ if ($gatewayJoined -match 'sk-probe-SENTINEL') {
 # 最后跑一次真实诊断命令：能走到 HTTP 层并给出分类结果，才说明依赖、配置与适配器
 # 三者都在运行镜像里就位。端点用 RFC 2606 保留的 .invalid，永远不解析，因此 CI 不会
 # 发出任何外部请求，失败会被分类为 transient（退出码 2）。
-$diagnoseOutput = Invoke-Docker -Arguments @(
+#
+# 退出码 2 就是这个探针要的结果，所以这是唯一期望非零退出的调用：0 说明根本没走到
+# 网络层，1 说明把 transient 误判成 permanent（那会让运维去修一份本来正确的配置）。
+$diagnoseOutput = Invoke-Docker -AllowedExitCodes @(2) -Arguments @(
     'run', '--rm',
     '--env', 'MOCK_MODEL_MODE=false',
     '--env', 'MODEL_BASE_URL=https://dashscope.invalid/compatible-mode/v1',
@@ -134,8 +142,8 @@ if ($diagnoseJoined -match 'sk-probe-SENTINEL') {
 if ($diagnoseJoined -notmatch 'RESULT:') {
     throw 'The runtime diagnostic produced no RESULT line.'
 }
-if ($diagnoseJoined -notmatch '\((retryable|permanent)\)') {
-    throw 'The runtime diagnostic reported a failure without classifying it.'
+if ($diagnoseJoined -notmatch '\((retryable)\)') {
+    throw 'The runtime diagnostic classified the unresolvable endpoint as permanent.'
 }
 
 Write-Host 'PORT-001 runtime image model adapter validation passed.'
