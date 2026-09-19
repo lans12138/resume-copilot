@@ -568,7 +568,7 @@ _ARCHETYPES: tuple[_Archetype, ...] = (
     ),
     _Archetype(
         key="out-of-vocabulary-skills",
-        split=Split.DEV,
+        split=Split.HOLDOUT,
         tags=(),
         note=(
             "必备技能之外还写了抽取词表里没有的技能（kotlin、grpc）。抽取召回率因此"

@@ -409,18 +409,17 @@ def evaluate(
 ) -> CorpusMetrics:
     """Compare a run's predictions against the corpus's declared labels.
 
-    ``split`` restricts the *per-case* metrics — extraction, support labels and
-    hard-rule outcomes — to one half of the corpus. The holdout half is what a
-    threshold may be reported against; the dev half is what it may be tuned on.
+    ``split`` restricts every metric — extraction, support labels, hard-rule
+    outcomes and ranking — to one half of the corpus. The holdout half is what a
+    threshold may be *reported* against; the dev half is what it may be tuned on.
     Passing ``None`` scores every case, which is useful while iterating and must
     not be what a published number uses.
 
-    Retrieval deliberately ignores ``split``. A ranking is a property of the whole
-    candidate pool, so ranking half of it produces a ranking production never
-    makes — and cutting the pool to five candidates per posting makes Recall@K
-    trivially 1.0, which measures the cut rather than the retriever. Relevance is
-    also hand-declared rather than tuned, so there is nothing for the split to
-    protect here.
+    The ranking is scored over the same set it was built from, so the caller has
+    to hand ``run_corpus`` the same cases it means to report on. Ranking one pool
+    and then scoring a different one would produce a number about neither; the
+    per-family ``pool_size`` is printed so the size of the pool is visible rather
+    than assumed.
     """
     cases = {case.case_id: case for case in corpus.cases}
     predictions = [item for item in run.cases if split is None or item.split is split]
@@ -437,8 +436,7 @@ def evaluate(
     extraction = _extraction_report(measured, cases, record)
     outcome = _outcome_report(measured, cases, record)
     support = _support_report(measured, cases, record)
-    # Every measured case, not just the split: see the docstring.
-    retrieval = _retrieval_report([item for item in run.cases if item.measured], cases, k, record)
+    retrieval = _retrieval_report(measured, cases, k, record)
 
     for item in predictions:
         if not item.measured:

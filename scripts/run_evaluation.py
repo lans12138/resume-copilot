@@ -188,13 +188,13 @@ async def _run(args: argparse.Namespace) -> int:
 
     split = _SPLITS[args.split]
 
-    # Always the whole corpus, even when only one half is reported: the ranking has
-    # to be built over the pool production would rank, or the retrieval metrics
-    # measure the cut instead of the retriever. ``--split`` narrows the per-case
-    # metrics only.
+    # The run holds exactly the cases being reported on, so the ranking is built
+    # over the same pool it is scored against. Ranking one pool and reporting
+    # another would give a number about neither.
+    cases = BUILTIN_CORPUS.cases if split is None else BUILTIN_CORPUS.split(split)
     run = await run_corpus(
         corpus=BUILTIN_CORPUS,
-        cases=BUILTIN_CORPUS.cases,
+        cases=cases,
         gateway=gateway,
         embedding_gateway=embedding_gateway,
         config=config,

@@ -108,6 +108,7 @@ _ANY_DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九
 _HOLDOUT_ARCHETYPES: frozenset[str] = frozenset(
     {
         "case-variant-skills",
+        "out-of-vocabulary-skills",
         "cross-segment-evidence",
         "unstated-but-confirmed",
         "missing-years",

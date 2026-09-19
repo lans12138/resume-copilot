@@ -425,7 +425,9 @@ def test_the_only_extraction_gap_is_the_one_the_corpus_declares() -> None:
     assert failing == expected
 
 
-def test_the_split_narrows_the_per_case_metrics_but_not_the_ranking() -> None:
+def test_the_split_narrows_every_metric_including_the_ranking() -> None:
+    """The reported half is scored end to end; a metric that ignored the split would
+    describe a set the report does not name."""
     run = _run_builtin()
     whole = evaluate(run, BUILTIN_CORPUS, k=5)
     holdout = evaluate(run, BUILTIN_CORPUS, k=5, split=Split.HOLDOUT)
@@ -433,9 +435,11 @@ def test_the_split_narrows_the_per_case_metrics_but_not_the_ranking() -> None:
     assert holdout.split is Split.HOLDOUT
     assert holdout.measured_cases < whole.measured_cases
     assert holdout.support.samples < whole.support.samples
-    # A ranking is a property of the whole pool, so cutting the pool would change
-    # the number into one about the cut.
-    assert holdout.retrieval.families == whole.retrieval.families
+    assert holdout.retrieval.families and whole.retrieval.families
+    assert {row.pool_size for row in holdout.retrieval.families} != {
+        row.pool_size for row in whole.retrieval.families
+    }
+    assert holdout.retrieval.families[0].relevant < whole.retrieval.families[0].relevant
 
 
 def test_recall_is_reported_with_the_ceiling_it_is_measured_against() -> None:
