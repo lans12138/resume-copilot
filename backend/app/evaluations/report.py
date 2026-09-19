@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from backend.app.evaluations.injection import ATTACK_SUCCESS_THRESHOLD, InjectionRunReport
 from backend.app.evaluations.metrics import CorpusMetrics, Stage
+from backend.app.evaluations.provenance import Provenance, render_provenance
 from backend.app.evaluations.runner import PredictionSource
 
 #: How each source is named in the report.
@@ -127,9 +128,15 @@ class Section:
 class EvaluationReport:
     title: str
     sections: tuple[Section, ...]
+    #: Which revision and invocation produced these numbers (PORT-006). Optional
+    #: so a caller that genuinely has no repository context can still render, but
+    #: every real entry point supplies it.
+    provenance: Provenance | None = None
 
 
-def build_report(title: str, sections: list[Section]) -> EvaluationReport:
+def build_report(
+    title: str, sections: list[Section], provenance: Provenance | None = None
+) -> EvaluationReport:
     """Assemble a report, refusing to let one source appear twice.
 
     Two sections for the same source would be two runs whose numbers a reader
@@ -156,12 +163,14 @@ def build_report(title: str, sections: list[Section]) -> EvaluationReport:
                 f"{section.metrics.source.value} and an injection run from "
                 f"{section.injection.source.value}; they are different runs"
             )
-    return EvaluationReport(title=title, sections=tuple(sections))
+    return EvaluationReport(title=title, sections=tuple(sections), provenance=provenance)
 
 
 def render(report: EvaluationReport) -> str:
     """Render the report as Markdown, one section per source."""
     lines = [f"# {report.title}", ""]
+    if report.provenance is not None:
+        lines.extend(render_provenance(report.provenance))
     for section in report.sections:
         lines.extend(_render_section(section))
     return "\n".join(lines).rstrip() + "\n"

@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import os
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 # Make ``backend`` importable whether run from repo root or /workspace.
@@ -48,6 +49,7 @@ from backend.app.evaluations.injection_corpus import (  # noqa: E402
     BUILTIN_INJECTION_DATASET,
 )
 from backend.app.evaluations.metrics import CorpusMetrics, evaluate  # noqa: E402
+from backend.app.evaluations.provenance import describe_provenance  # noqa: E402
 from backend.app.evaluations.report import (  # noqa: E402
     SOURCE_CAVEATS,
     FixtureMetric,
@@ -236,7 +238,12 @@ def _budget_note(args: argparse.Namespace) -> tuple[str, ...]:
     return (f"本次调用预算 {args.max_calls} 次；超出即停止评测，不产生结论。",)
 
 
-async def _run(args: argparse.Namespace) -> int:
+def _invocation(argv: Sequence[str]) -> str:
+    """The command that produced this report, as a reader would type it again."""
+    return "python scripts/run_evaluation.py " + " ".join(argv)
+
+
+async def _run(args: argparse.Namespace, invocation: str) -> int:
     _ensure_storage_root_is_absolute()
     settings = get_settings()
     if args.live:
@@ -288,7 +295,11 @@ async def _run(args: argparse.Namespace) -> int:
     if not args.no_fixtures:
         sections.append(_fixture_section(config))
 
-    text = render(build_report("resume-copilot 离线评测报告", sections))
+    # PORT-006: a metrics report has to name the revision it measured. The command
+    # recorded is the invocation that actually ran, not a documented example, so a
+    # reader can reproduce this exact report rather than an approximation of it.
+    provenance = describe_provenance(invocation)
+    text = render(build_report("resume-copilot 离线评测报告", sections, provenance))
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text, encoding="utf-8")
@@ -310,9 +321,10 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv if argv is not None else sys.argv[1:])
+    resolved = sys.argv[1:] if argv is None else argv
+    args = _parse_args(resolved)
     try:
-        return asyncio.run(_run(args))
+        return asyncio.run(_run(args, _invocation(resolved)))
     except EvaluationSetupError as error:
         sys.stderr.write(f"\n评测无法开始[{error.code}]：{error.safe_message}\n")
         return EXIT_SETUP_FAILED
