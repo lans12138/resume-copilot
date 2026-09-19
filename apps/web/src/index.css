@@ -41,12 +41,16 @@
 .run-conn .dot{width:.5rem;aspect-ratio:1;border-radius:50%;background:var(--muted)}
 .run-conn.live .dot{background:var(--green)}
 .run-conn.error .dot{background:var(--red)}
-.diff-grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.diff-col{border:1px solid var(--line);border-radius:.7rem;padding:1rem;background:#f6f8f3}
-.diff-col h4{margin:.2rem 0 .8rem;font-size:.92rem}
-.param-row{display:flex;justify-content:space-between;gap:1rem;padding:.5rem 0;border-bottom:1px solid var(--line);font-size:.85rem}
-.param-row:last-child{border-bottom:0}
-.param-row code{word-break:break-all}
+/* PORT-005: the action in one sentence, above the parameters that carry it out. */
+.action-summary{margin:.2rem 0 .9rem;line-height:1.7;color:#43514b}
+/* PORT-005: aligned rows instead of two independent dumps, so a deleted parameter is
+   visible as a change rather than as silence. */
+.diff-table{width:100%;border-collapse:collapse;font-size:.84rem}
+.diff-table th,.diff-table td{padding:.6rem .5rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+.diff-table thead th{color:var(--muted);font-size:.72rem;text-transform:uppercase}
+.diff-table tbody th{font-weight:600;white-space:nowrap}
+.diff-table code{word-break:break-all}
+.diff-table tr.is-changed{background:#f6f8f3}
 .claim{border:1px solid var(--line);border-radius:.8rem;padding:1rem;margin-bottom:.8rem;background:var(--paper)}
 .claim-head{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem}
 .evidence{border-left:3px solid #9cab8e;padding:.45rem .85rem;margin:.4rem 0;background:#eef1e8;border-radius:.2rem .6rem .6rem .2rem;color:#43514b;font-size:.84rem;line-height:1.6}
@@ -59,7 +63,9 @@
 .question{border:1px solid var(--line);border-radius:.8rem;padding:1rem;margin-bottom:.7rem;background:var(--paper)}
 .question.sensitive{border-color:#e7c9a8;background:#fbf3e6}
 .question .sens{margin-top:.45rem;color:#7a6310;font-size:.78rem;font-weight:700}
-@media(max-width:800px){.diff-grid{grid-template-columns:1fr}}
+/* PORT-005: below the demo resolution the diff table scrolls sideways rather than
+   collapsing the parameter column, which is the one thing it must not lose. */
+@media(max-width:800px){.diff-table{display:block;overflow-x:auto}}
 
 /* FIN-004 document queue: per-file upload outcomes and failure detail rows. */
 .upload-outcomes{display:flex;flex-direction:column;gap:.45rem;margin:.7rem 0 0;padding:0;list-style:none}
