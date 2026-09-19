@@ -26,6 +26,14 @@
 .timeline li:before{content:"";position:absolute;left:-.42rem;top:1rem;width:.66rem;aspect-ratio:1;border-radius:50%;background:var(--green)}
 .timeline .tl-meta{display:flex;gap:.6rem;align-items:center;color:var(--muted);font-size:.78rem}
 .timeline .tl-text{margin:.25rem 0 0;line-height:1.6;color:#43514b}
+/* PORT-005: a failure gets its own line — a code chip the operator can quote and,
+   when the fault is per-candidate, which candidate it hit. */
+.timeline .tl-failure{display:flex;flex-wrap:wrap;gap:.5rem;align-items:baseline;margin:.3rem 0 0;color:#8a2f2f}
+.timeline .tl-failure small{color:var(--muted)}
+/* Technical identifiers are available but collapsed, so the reading line stays prose. */
+.timeline .tl-detail{margin-top:.3rem}
+.timeline .tl-detail summary{cursor:pointer;color:var(--muted);font-size:.78rem}
+.timeline .tl-detail .kv{margin-top:.4rem;font-size:.78rem}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:.5rem 1rem;margin:0}
 .kv dt{color:var(--muted);font-size:.8rem}
 .kv dd{margin:0;font-weight:600}
