@@ -109,19 +109,31 @@ export function locatorCharRange(
   return { start, end }
 }
 
+/**
+ * Structural position only: the page / paragraph / cell, without the char range.
+ *
+ * Used where the position is a caption rather than an instruction — a report lists
+ * a quote and says which page it came from; the character offsets would be noise
+ * next to a quote the reader can already see.
+ */
+export function describeBlock(locator: EvidenceLocator | null | undefined): string {
+  if (!locator) return "位置未知"
+  switch (locator.kind) {
+    case "pdf":
+      return `第 ${locator.page_number} 页 · 第 ${locator.block_index} 块`
+    case "docx_paragraph":
+      return `第 ${locator.paragraph_index} 段`
+    case "docx_table":
+      return `表格 ${locator.table_index} · 第 ${locator.row_index} 行 · 第 ${locator.cell_index} 列`
+  }
+}
+
 /** Human-readable position, used as the evidence caption. */
 export function describeLocator(locator: EvidenceLocator | null | undefined): string {
   if (!locator) return "位置未知"
   const range = locatorCharRange(locator)
   const suffix = range ? `字符 ${range.start}–${range.end}` : "字符范围未知"
-  switch (locator.kind) {
-    case "pdf":
-      return `第 ${locator.page_number} 页 · 第 ${locator.block_index} 块 · ${suffix}`
-    case "docx_paragraph":
-      return `第 ${locator.paragraph_index} 段 · ${suffix}`
-    case "docx_table":
-      return `表格 ${locator.table_index} · 第 ${locator.row_index} 行 · 第 ${locator.cell_index} 列 · ${suffix}`
-  }
+  return `${describeBlock(locator)} · ${suffix}`
 }
 
 /**

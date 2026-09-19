@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   buildQuoteLocator,
+  describeBlock,
   describeLocator,
   findBlockIndex,
   groupBlocks,
@@ -56,6 +57,27 @@ describe("describeLocator", () => {
 
   it("says so when the range is unusable instead of printing nonsense", () => {
     expect(describeLocator({ ...paragraph, char_start: 3, char_end: 3 })).toContain("字符范围未知")
+  })
+})
+
+describe("describeBlock", () => {
+  // PORT-005: a report caption names the page or paragraph and stops there — the
+  // character offsets are noise next to a quote the reader can already see.
+  it("names the structural position without the char range", () => {
+    expect(describeBlock(pdf)).toBe("第 1 页 · 第 0 块")
+    expect(describeBlock(paragraph)).toBe("第 2 段")
+    expect(describeBlock(table)).toBe("表格 0 · 第 1 行 · 第 2 列")
+  })
+
+  it("says the position is unknown rather than describing nothing", () => {
+    expect(describeBlock(null)).toBe("位置未知")
+    expect(describeBlock(undefined)).toBe("位置未知")
+  })
+
+  it("still describes a block whose char range is unusable", () => {
+    // The structure is known even when the offsets are not, and a reader looking for
+    // the excerpt cares about the paragraph.
+    expect(describeBlock({ ...paragraph, char_start: 3, char_end: 3 })).toBe("第 2 段")
   })
 })
 

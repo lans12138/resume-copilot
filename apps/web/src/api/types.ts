@@ -221,6 +221,8 @@ export interface EvidenceOut {
   quote_text: string
   quote_start: number
   quote_end: number
+  /** Server contract is `dict[str, Any]`; narrow with `parseLocator` before use. */
+  locator_json: unknown
 }
 export interface ClaimOut {
   claim_type: string

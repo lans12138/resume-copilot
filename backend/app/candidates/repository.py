@@ -7,6 +7,7 @@ rolls back cleanly and duplicate deliveries do not create orphan rows.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, cast
 from uuid import UUID
 
@@ -168,6 +169,27 @@ class SqlEvidenceChunkRepository:
     async def list_chunks(self, candidate_profile_id: UUID) -> list[EvidenceChunk]:
         """Expose the evidence-provider port used during report generation."""
         return await self.list_by_profile(candidate_profile_id)
+
+    async def list_locators(self, chunk_ids: Sequence[UUID]) -> dict[UUID, dict[str, object]]:
+        """Where each chunk sits in its source document, keyed by chunk id.
+
+        PORT-005: a report's evidence has to be readable *and* openable — the reader
+        wants the quoted sentence and the page it came from, and previously the only
+        way to reach the source was to search the documents list by hand. The
+        locator is stored as ``dict[str, Any]`` (the demo seed writes its own shape),
+        so it is passed through untouched and narrowed by the client at render time.
+
+        An empty id set returns an empty mapping without querying: ``IN ()`` is not
+        valid SQL.
+        """
+        if not chunk_ids:
+            return {}
+        rows = await self.session.execute(
+            select(EvidenceChunk.id, EvidenceChunk.locator_json).where(
+                EvidenceChunk.id.in_(chunk_ids)
+            )
+        )
+        return {chunk_id: dict(locator) for chunk_id, locator in rows.tuples().all()}
 
     async def exists_index(self, document_id: UUID, chunk_index: int) -> bool:
         count = await self.session.scalar(

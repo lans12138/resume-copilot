@@ -21,6 +21,13 @@ class EvidenceOut(BaseModel):
     quote_text: str
     quote_start: int
     quote_end: int
+    # PORT-005: where the excerpt sits in the source document, so the report panel
+    # can name the page/paragraph and open it instead of making the reader find the
+    # resume by hand. Untyped on purpose — the column is ``dict[str, Any]`` and the
+    # client narrows it with ``parseLocator``, the same way it narrows a chunk's
+    # locator on the review screen. A locator this build cannot parse must render as
+    # "位置未知", not as a failed response.
+    locator_json: dict[str, object] | None = None
 
 
 class ClaimOut(BaseModel):
@@ -78,25 +85,35 @@ class ReportList(BaseModel):
         cls,
         views: list[ReportView],
         summaries: Mapping[UUID, CandidateDisplaySummary] | None = None,
+        locators: Mapping[UUID, dict[str, object]] | None = None,
     ) -> ReportList:
-        """Build the response, optionally naming each report's candidate.
+        """Build the response, optionally naming candidates and placing evidence.
 
-        ``summaries`` is optional so an existing caller that only needs the scored
-        claims does not have to fabricate a lookup; the fields then stay null and the
-        client degrades to the profile id instead of failing.
+        Both lookups are optional so an existing caller that only needs the scored
+        claims does not have to fabricate one; the fields then stay null and the
+        client degrades — to the profile id for a name, to "位置未知" for a position —
+        rather than failing.
         """
-        resolved = summaries or {}
+        resolved_summaries = summaries or {}
+        resolved_locators = locators or {}
         return cls(
             reports=[
-                _report_out(view, resolved.get(view.report.candidate_profile_id))
+                _report_out(
+                    view,
+                    resolved_summaries.get(view.report.candidate_profile_id),
+                    resolved_locators,
+                )
                 for view in views
             ]
         )
 
 
 def _report_out(
-    view: ReportView, summary: CandidateDisplaySummary | None = None
+    view: ReportView,
+    summary: CandidateDisplaySummary | None = None,
+    locators: Mapping[UUID, dict[str, object]] | None = None,
 ) -> ReportOut:
+    placed = locators or {}
     return ReportOut(
         id=view.report.id,
         run_id=view.report.run_id,
@@ -124,6 +141,7 @@ def _report_out(
                         quote_text=evidence.quote_text,
                         quote_start=evidence.quote_start,
                         quote_end=evidence.quote_end,
+                        locator_json=placed.get(evidence.evidence_chunk_id),
                     )
                     for evidence in claim_view.evidences
                 ],

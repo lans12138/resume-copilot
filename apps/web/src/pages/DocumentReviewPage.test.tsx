@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { MemoryRouter, Route, Routes, RouterProvider, createMemoryRouter } from "react-router-dom"
@@ -151,17 +151,30 @@ async function selectJob() {
   await userEvent.selectOptions(select, JOB_ID)
 }
 
-function renderPage() {
+function renderPage(entry = `/documents/${DOCUMENT_ID}/review`) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[`/documents/${DOCUMENT_ID}/review`]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
           <Route path="/documents/:documentId/review" element={<DocumentReviewPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   )
+}
+
+/** The chunk a report links to when it deep-links into this screen (PORT-005). */
+const citedChunk: EvidenceChunk = {
+  id: "77777777-7777-4777-8777-777777777777",
+  document_id: DOCUMENT_ID,
+  candidate_profile_id: PROFILE_ID,
+  chunk_index: 0,
+  section_type: "工作经历",
+  locator_json: { kind: "docx_paragraph", paragraph_index: 1, char_start: 0, char_end: 17 },
+  text: "6 年 Python 后端开发经验",
+  text_sha256: "b".repeat(64),
+  created_at: "2026-09-14T04:00:00Z",
 }
 
 beforeEach(() => {
@@ -348,5 +361,41 @@ describe("DocumentReviewPage", () => {
     })
 
     expect(await screen.findByDisplayValue("李四")).toBeInTheDocument()
+  })
+
+  // PORT-005: the report links here with ?chunk=<id> so that reading an excerpt and
+  // finding its source are one action instead of a manual search.
+  it("locates the chunk a report linked to and says which one it is", async () => {
+    stubApi({ evidence: [citedChunk] })
+    renderPage(`/documents/${DOCUMENT_ID}/review?chunk=${citedChunk.id}`)
+
+    expect(await screen.findByText("已定位到报告引用的原文片段")).toBeInTheDocument()
+    expect(screen.getByText(/工作经历 · 第 1 段/)).toBeInTheDocument()
+
+    // Scoped to the source panel: the evidence list shows the same text.
+    const source = await screen.findByRole("region", { name: "简历原文" })
+    const block = within(source).getByText(citedChunk.text)
+    expect(block.closest("[data-block-index]")).toHaveClass("is-active")
+  })
+
+  it("does not locate anything without a chunk parameter", async () => {
+    stubApi({ evidence: [citedChunk] })
+    renderPage()
+
+    const source = await screen.findByRole("region", { name: "简历原文" })
+    expect(within(source).getByText(citedChunk.text)).toBeInTheDocument()
+    expect(screen.queryByText("已定位到报告引用的原文片段")).toBeNull()
+    expect(document.querySelector("[data-block-index].is-active")).toBeNull()
+  })
+
+  it("says the cited evidence is from another version instead of highlighting nothing", async () => {
+    // A report cites a chunk from the profile as it was when the run happened. If the
+    // resume was re-parsed since, that chunk is not in this document's evidence and
+    // the link cannot resolve — which the reader has to be told.
+    stubApi({ evidence: [] })
+    renderPage(`/documents/${DOCUMENT_ID}/review?chunk=${citedChunk.id}`)
+
+    expect(await screen.findByText("报告引用的证据不在当前原文中")).toBeInTheDocument()
+    expect(screen.getByText(/可能来自此文档的旧资料版本/)).toBeInTheDocument()
   })
 })

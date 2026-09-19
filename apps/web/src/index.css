@@ -42,6 +42,12 @@
 .claim{border:1px solid var(--line);border-radius:.8rem;padding:1rem;margin-bottom:.8rem;background:var(--paper)}
 .claim-head{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:.5rem}
 .evidence{border-left:3px solid #9cab8e;padding:.45rem .85rem;margin:.4rem 0;background:#eef1e8;border-radius:.2rem .6rem .6rem .2rem;color:#43514b;font-size:.84rem;line-height:1.6}
+/* PORT-005: an excerpt and its position are one block — the reader should never see
+   a quote without being able to tell where it came from or open it. */
+.evidence-quote{display:block}
+.evidence-source{display:flex;flex-wrap:wrap;gap:.6rem;align-items:baseline;margin-top:.35rem}
+.evidence-source small{color:#5c6862;font-weight:500}
+.evidence-source .text-button{margin-left:auto}
 .question{border:1px solid var(--line);border-radius:.8rem;padding:1rem;margin-bottom:.7rem;background:var(--paper)}
 .question.sensitive{border-color:#e7c9a8;background:#fbf3e6}
 .question .sens{margin-top:.45rem;color:#7a6310;font-size:.78rem;font-weight:700}

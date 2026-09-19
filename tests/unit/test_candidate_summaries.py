@@ -24,11 +24,24 @@ from uuid import UUID, uuid4
 import pytest
 
 from backend.app.candidates.models import CandidateProfile
+from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.candidates.summaries import (
     load_display_summaries,
     summarise_profiles,
 )
 from backend.app.main import create_app
+from backend.app.reports.models import (
+    ClaimEvidence,
+    ClaimSource,
+    ClaimView,
+    ImpactLevel,
+    MatchReport,
+    Recommendation,
+    ReportClaim,
+    ReportView,
+    SupportLevel,
+)
+from backend.app.reports.schemas import ReportList
 from tests.unit.settings_factory import make_settings
 
 
@@ -134,6 +147,70 @@ class TestLoadDisplaySummaries:
         assert asyncio.run(load_display_summaries(session, [])) == {}
 
 
+class TestEvidenceLocators:
+    """PORT-005: the report must be able to say *where* an excerpt came from."""
+
+    def test_an_empty_id_set_does_not_query(self) -> None:
+        session: Any = _ExplodingSession()
+
+        assert asyncio.run(SqlEvidenceChunkRepository(session).list_locators([])) == {}
+
+    def _view(self, chunk_id: UUID) -> ReportView:
+        now = datetime.now(UTC)
+        report = MatchReport(
+            id=uuid4(),
+            run_id=uuid4(),
+            application_id=uuid4(),
+            candidate_profile_id=uuid4(),
+            overall_score=Decimal("90.00"),
+            recommendation=Recommendation.STRONG_MATCH,
+            summary="摘要",
+            model_snapshot_json={},
+            created_at=now,
+        )
+        claim = ReportClaim(
+            id=uuid4(),
+            report_id=report.id,
+            claim_type="hard_rule:years_experience",
+            claim_text="满足years_experience",
+            source=ClaimSource.RULE,
+            impact_level=ImpactLevel.MEDIUM,
+            support_level=SupportLevel.SUPPORTED,
+            confidence_note=None,
+            display_order=0,
+        )
+        evidence = ClaimEvidence(
+            id=uuid4(),
+            claim_id=claim.id,
+            evidence_chunk_id=chunk_id,
+            quote_text="6 年",
+            quote_start=0,
+            quote_end=3,
+        )
+        return ReportView(report=report, claims=[ClaimView(claim=claim, evidences=[evidence])])
+
+    def test_the_locator_reaches_the_evidence(self) -> None:
+        chunk_id = uuid4()
+        locator = {
+            "kind": "docx_paragraph",
+            "paragraph_index": 1,
+            "char_start": 0,
+            "char_end": 17,
+        }
+
+        built = ReportList.from_views([self._view(chunk_id)], None, {chunk_id: locator})
+
+        assert built.reports[0].claims[0].evidences[0].locator_json == locator
+
+    def test_a_chunk_without_a_locator_still_renders(self) -> None:
+        """A position the server cannot resolve is a caption problem, not a 500."""
+        built = ReportList.from_views([self._view(uuid4())])
+
+        evidence = built.reports[0].claims[0].evidences[0]
+        assert evidence.locator_json is None
+        assert evidence.quote_text == "6 年"
+
+
 class TestWireContract:
     """The display fields have to exist on the wire, or the pages cannot use them."""
 
@@ -192,3 +269,12 @@ class TestWireContract:
 
         assert "candidate_profile_id" in required
         assert "display_name" not in required
+
+    def test_evidence_carries_the_position_of_its_source(
+        self, schemas: dict[str, Any]
+    ) -> None:
+        """Without this the report can show a quote but not say where it came from."""
+        properties = schemas["EvidenceOut"]["properties"]
+
+        assert "locator_json" in properties
+        assert "locator_json" not in schemas["EvidenceOut"]["required"]

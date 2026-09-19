@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request
 
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.candidates.repository import SqlEvidenceChunkRepository
 from backend.app.candidates.summaries import load_display_summaries
 from backend.app.core.errors import AppError
 from backend.app.infrastructure.runtime import RuntimeResources
@@ -56,4 +57,7 @@ async def list_run_reports(
         summaries = await load_display_summaries(
             session, [v.report.candidate_profile_id for v in views]
         )
-        return ReportList.from_views(views, summaries)
+        locators = await SqlEvidenceChunkRepository(session).list_locators(
+            [e.evidence_chunk_id for v in views for c in v.claims for e in c.evidences]
+        )
+        return ReportList.from_views(views, summaries, locators)

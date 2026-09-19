@@ -1,5 +1,7 @@
+import { Link } from "react-router-dom"
 import type { ClaimOut, ReportList } from "../api/types"
 import { candidateName, shortProfileId } from "../lib/candidateDisplay"
+import { describeBlock, parseLocator } from "../lib/locator"
 
 const supportLabel: Record<string, string> = {
   SUPPORTED: "支持",
@@ -31,7 +33,7 @@ const sourceTone: Record<string, string> = {
   MODEL: "muted",
 }
 
-function ClaimCard({ claim }: { claim: ClaimOut }) {
+function ClaimCard({ claim, documentId }: { claim: ClaimOut; documentId: string | null }) {
   return (
     <article className="claim">
       <div className="claim-head">
@@ -62,7 +64,26 @@ function ClaimCard({ claim }: { claim: ClaimOut }) {
       ) : (
         claim.evidences.map((ev) => (
           <blockquote className="evidence" key={`${ev.evidence_chunk_id}-${ev.quote_start}`}>
-            “{ev.quote_text}”
+            {/* PORT-005: every excerpt says where it came from and can be opened
+                there. Reading a quote and then hunting for it across the documents
+                list was the "手工切换多页" the roadmap calls out. The link carries
+                the chunk id, so the review screen opens already located. */}
+            <span className="evidence-quote">“{ev.quote_text}”</span>
+            <span className="evidence-source">
+              <small>{describeBlock(parseLocator(ev.locator_json))}</small>
+              {documentId ? (
+                <Link
+                  className="text-button"
+                  to={`/documents/${documentId}/review?chunk=${ev.evidence_chunk_id}`}
+                >
+                  查看原文 →
+                </Link>
+              ) : (
+                // No document to open: the profile could not be read, so say why the
+                // action is missing rather than dropping it silently.
+                <small>来源文档不可用，无法跳转原文</small>
+              )}
+            </span>
           </blockquote>
         ))
       )}
@@ -103,7 +124,11 @@ export function ClaimEvidencePanel({ reports }: { reports: ReportList }) {
             .slice()
             .sort((a, b) => a.display_order - b.display_order)
             .map((claim) => (
-              <ClaimCard key={`${report.id}-${claim.display_order}`} claim={claim} />
+              <ClaimCard
+                key={`${report.id}-${claim.display_order}`}
+                claim={claim}
+                documentId={report.document_id}
+              />
             ))}
         </section>
       ))}

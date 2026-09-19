@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { Link, useParams, useSearchParams } from "react-router-dom"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ApiError, api } from "../api/client"
 import type { CandidateProfileEdit, EvidenceLocator } from "../api/types"
@@ -9,7 +9,7 @@ import { ProfileForm, type ProfileFormSubmission } from "../components/ProfileFo
 import { SourceLocatorViewer, type PinRequest } from "../components/SourceLocatorViewer"
 import { documentStatusLabel, documentStatusTone } from "../lib/documentStatus"
 import { nextChunkIndex } from "../lib/evidence"
-import { parseLocator } from "../lib/locator"
+import { describeLocator, parseLocator } from "../lib/locator"
 import { PROFILE_STATUS_LABELS } from "../lib/profileEdit"
 import { useAppStore } from "../state/session"
 
@@ -36,10 +36,17 @@ export function DocumentReviewPage() {
 function DocumentReview({ documentId }: { documentId: string }) {
   const token = useAppStore((state) => state.accessToken)!
   const queryClient = useQueryClient()
+  const [searchParams] = useSearchParams()
   const [jobId, setJobId] = useState("")
   const [activeLocator, setActiveLocator] = useState<EvidenceLocator | null>(null)
   const [actionError, setActionError] = useState<unknown>(null)
   const [pinnedNote, setPinnedNote] = useState<string | null>(null)
+  // A report links here with ?chunk=<evidence_chunk_id> (PORT-005). The deep link is
+  // applied once and then owned by the reviewer: re-asserting it on every evidence
+  // refetch would drag the view back to the report's excerpt right after someone
+  // pinned a new one.
+  const focusChunkId = searchParams.get("chunk")
+  const [focusApplied, setFocusApplied] = useState(false)
 
   const document = useQuery({
     queryKey: ["document", documentId],
@@ -106,6 +113,21 @@ function DocumentReview({ documentId }: { documentId: string }) {
     .map((chunk) => parseLocator(chunk.locator_json))
     .filter((locator): locator is EvidenceLocator => locator !== null)
 
+  // Resolve the report's excerpt to a position in this document. A chunk the report
+  // cites may not be here at all — the profile may have been re-extracted since the
+  // report was written — and that case is reported below rather than left as a
+  // silent "nothing highlighted".
+  const focusChunk = focusChunkId
+    ? (evidence.data ?? []).find((chunk) => chunk.id === focusChunkId)
+    : undefined
+  const focusMissing = Boolean(focusChunkId) && evidence.data !== undefined && focusChunk === undefined
+
+  useEffect(() => {
+    if (focusApplied || focusChunk === undefined) return
+    setActiveLocator(parseLocator(focusChunk.locator_json))
+    setFocusApplied(true)
+  }, [focusApplied, focusChunk])
+
   return (
     <section>
       <Link className="back-link" to="/documents">← 返回简历文档</Link>
@@ -152,6 +174,18 @@ function DocumentReview({ documentId }: { documentId: string }) {
         <div className="notice" role="status">
           <strong>尚未选择岗位</strong>
           <span>可以继续阅读原文与资料，但钉证据与确认按钮在选定岗位前不可用。</span>
+        </div>
+      ) : null}
+      {focusChunk ? (
+        <div className="notice" role="status">
+          <strong>已定位到报告引用的原文片段</strong>
+          <span>{focusChunk.section_type} · {describeLocator(parseLocator(focusChunk.locator_json))}</span>
+        </div>
+      ) : null}
+      {focusMissing ? (
+        <div className="notice notice-error">
+          <strong>报告引用的证据不在当前原文中</strong>
+          <span>该片段可能来自此文档的旧资料版本。请在上方核对资料版本，或返回报告查看其他证据。</span>
         </div>
       ) : null}
 

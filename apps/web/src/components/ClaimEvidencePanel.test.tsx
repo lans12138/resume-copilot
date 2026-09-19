@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { render, screen } from "@testing-library/react"
+import { render as rtlRender, screen } from "@testing-library/react"
+import type { ReactElement } from "react"
+import { MemoryRouter } from "react-router-dom"
 import { ClaimEvidencePanel } from "./ClaimEvidencePanel"
 import type { ClaimOut, ReportList } from "../api/types"
+
+// PORT-005: the panel now links each excerpt to its source, so every case needs a
+// router. Shadowing `render` keeps the existing call sites unchanged.
+const render = (ui: ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>)
 
 function claim(overrides: Partial<ClaimOut> = {}): ClaimOut {
   return {
@@ -18,6 +24,7 @@ function claim(overrides: Partial<ClaimOut> = {}): ClaimOut {
         quote_text: "5 年",
         quote_start: 0,
         quote_end: 3,
+        locator_json: { kind: "docx_paragraph", paragraph_index: 12, char_start: 4, char_end: 7 },
       },
     ],
     ...overrides,
@@ -100,8 +107,20 @@ describe("ClaimEvidencePanel", () => {
         reports={reports([
           claim({
             evidences: [
-              { evidence_chunk_id: "chunk-1", quote_text: "5 年", quote_start: 0, quote_end: 3 },
-              { evidence_chunk_id: "chunk-1", quote_text: "3 年", quote_start: 9, quote_end: 12 },
+              {
+                evidence_chunk_id: "chunk-1",
+                quote_text: "5 年",
+                quote_start: 0,
+                quote_end: 3,
+                locator_json: null,
+              },
+              {
+                evidence_chunk_id: "chunk-1",
+                quote_text: "3 年",
+                quote_start: 9,
+                quote_end: 12,
+                locator_json: null,
+              },
             ],
           }),
         ])}
@@ -128,6 +147,58 @@ describe("ClaimEvidencePanel", () => {
   it("says so when the run has produced no reports yet", () => {
     render(<ClaimEvidencePanel reports={{ reports: [] }} />)
     expect(screen.getByText(/尚未生成证据化报告/)).toBeTruthy()
+  })
+
+  // PORT-005: reading a quote and then hunting for it across the documents list was
+  // the "手工切换多页寻找原文" the roadmap calls out.
+  it("states where each excerpt came from", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+
+    expect(screen.getByText("第 12 段")).toBeInTheDocument()
+  })
+
+  it("opens the excerpt in its source document, already located", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+
+    expect(screen.getByRole("link", { name: "查看原文 →" })).toHaveAttribute(
+      "href",
+      "/documents/doc-1/review?chunk=chunk-1",
+    )
+  })
+
+  it("renders an unreadable locator as unknown rather than dropping the excerpt", () => {
+    // The column is dict[str, Any]: the demo seed writes its own shape, so a
+    // locator this build cannot parse is an expected input, not a corrupt response.
+    render(
+      <ClaimEvidencePanel
+        reports={reports([
+          claim({
+            evidences: [
+              {
+                evidence_chunk_id: "chunk-9",
+                quote_text: "5 年",
+                quote_start: 0,
+                quote_end: 3,
+                locator_json: { page: 3, bbox: [0, 0, 1, 1] },
+              },
+            ],
+          }),
+        ])}
+      />,
+    )
+
+    expect(screen.getByText("位置未知")).toBeInTheDocument()
+    // Still openable: the chunk id is what the review screen locates by.
+    expect(screen.getByRole("link", { name: "查看原文 →" })).toBeInTheDocument()
+  })
+
+  it("says why the source cannot be opened when the document is unknown", () => {
+    const list = reports([claim()])
+    list.reports[0].document_id = null
+    render(<ClaimEvidencePanel reports={list} />)
+
+    expect(screen.queryByRole("link", { name: "查看原文 →" })).toBeNull()
+    expect(screen.getByText(/来源文档不可用/)).toBeInTheDocument()
   })
 
   it("names a rule claim as a rule verdict", () => {
