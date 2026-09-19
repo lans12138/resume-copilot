@@ -26,11 +26,16 @@ from backend.app.agent.repository import SqlAgentRunRepository
 from backend.app.agent.service import RunService
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.candidates.summaries import (
+    CandidateDisplaySummary,
+    load_display_summaries,
+)
 from backend.app.core.errors import app_error
 from backend.app.idempotency.dependency import IdempotencyGuardDep
 from backend.app.infrastructure.celery import app as celery_app
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
+from backend.app.match_run.models import MatchRunCandidate
 from backend.app.match_run.repository import (
     SqlMatchRunCandidateRepository,
     SqlMatchRunRepository,
@@ -130,6 +135,34 @@ async def list_match_runs(job_id: UUID, actor: ActorDep, request: Request) -> Ma
         return MatchRunList(runs=summaries)
 
 
+def _candidate_out(
+    candidate: MatchRunCandidate, summary: CandidateDisplaySummary | None
+) -> MatchRunCandidateOut:
+    """One frozen ranking row, enriched with its live display fields (PORT-005).
+
+    A missing summary is not an error: the ranking is the durable record and it must
+    render even if the profile behind it can no longer be read. The name simply
+    stays absent and the client falls back to the profile id.
+    """
+    return MatchRunCandidateOut(
+        candidate_profile_id=candidate.candidate_profile_id,
+        application_id=candidate.application_id,
+        snapshot_order=candidate.snapshot_order,
+        rrf_score=float(candidate.rrf_score),
+        processing_status=candidate.processing_status.value,
+        hard_rule_overall=(
+            str((candidate.hard_rule_result_json or {}).get("overall"))
+            if candidate.hard_rule_result_json is not None
+            else None
+        ),
+        display_name=summary.display_name if summary else None,
+        normalized_skills=summary.normalized_skills if summary else [],
+        years_experience=summary.years_experience if summary else None,
+        education_level=summary.education_level if summary else None,
+        document_id=summary.document_id if summary else None,
+    )
+
+
 @router.get("/match-runs/{run_id}", response_model=MatchRunDetail)
 async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> MatchRunDetail:
     resources: RuntimeResources = request.app.state.resources
@@ -145,6 +178,13 @@ async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Matc
         if match_run is None:
             raise app_error("MATCH_RUN_NOT_FOUND", http_status=404, safe_message="分析流程不存在")
         candidates = await candidate_repo.get_candidates(run_id)
+        # PORT-005: name the candidates. The frozen ranking stores profile ids; the
+        # name, the short summary and the source document are read live from those
+        # profiles so the ranking table, the report heading and the source viewer can
+        # all be connected by name rather than by a truncated UUID.
+        summaries = await load_display_summaries(
+            session, [c.candidate_profile_id for c in candidates]
+        )
         return MatchRunDetail(
             run_id=match_run.run_id,
             job_id=match_run.job_id,
@@ -156,18 +196,7 @@ async def get_match_run(run_id: UUID, actor: ActorDep, request: Request) -> Matc
             created_at=match_run.created_at,
             finished_at=agent_run.finished_at,
             candidates=[
-                MatchRunCandidateOut(
-                    candidate_profile_id=c.candidate_profile_id,
-                    application_id=c.application_id,
-                    snapshot_order=c.snapshot_order,
-                    rrf_score=float(c.rrf_score),
-                    processing_status=c.processing_status.value,
-                    hard_rule_overall=(
-                        str((c.hard_rule_result_json or {}).get("overall"))
-                        if c.hard_rule_result_json is not None
-                        else None
-                    ),
-                )
+                _candidate_out(c, summaries.get(c.candidate_profile_id))
                 for c in candidates
             ],
         )

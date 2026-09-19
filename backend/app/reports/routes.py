@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request
 
 from backend.app.auth.dependencies import get_current_actor
 from backend.app.auth.tokens import Actor
+from backend.app.candidates.summaries import load_display_summaries
 from backend.app.core.errors import AppError
 from backend.app.infrastructure.runtime import RuntimeResources
 from backend.app.jobs.service import JobService
@@ -49,4 +50,10 @@ async def list_run_reports(
         await job_service.get_authorized(actor, match_run.job_id)
 
         views = await report_repo.list_by_run(run_id)
-        return ReportList.from_views(views)
+        # PORT-005: name each report's candidate and hand the client the source
+        # document, so the report panel can be read by name and its evidence can be
+        # opened at the original text instead of by hunting through the documents list.
+        summaries = await load_display_summaries(
+            session, [v.report.candidate_profile_id for v in views]
+        )
+        return ReportList.from_views(views, summaries)

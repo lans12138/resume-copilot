@@ -26,7 +26,15 @@ class MatchRunAccepted(BaseModel):
 
 
 class MatchRunCandidateOut(BaseModel):
-    """One frozen candidate ranking inside a MatchRun."""
+    """One frozen candidate ranking inside a MatchRun.
+
+    The ranking is frozen at run time, but the *display* fields are read live from
+    the profile they point at (PORT-005): a presenter connects a ranking row to its
+    report and its approval by name, and an eight-character profile id is not a
+    name. They are optional rather than required because a row whose profile can no
+    longer be read must still render — the ranking is the record, the name is a
+    courtesy, and a 500 over a missing name would lose the record.
+    """
 
     candidate_profile_id: UUID
     application_id: UUID
@@ -34,6 +42,12 @@ class MatchRunCandidateOut(BaseModel):
     rrf_score: float
     processing_status: str
     hard_rule_overall: str | None
+    display_name: str | None = None
+    normalized_skills: list[str] = []
+    years_experience: float | None = None
+    education_level: str | None = None
+    # The source document, so the row can deep-link to the candidate's original text.
+    document_id: UUID | None = None
 
 
 class MatchRunSummary(BaseModel):

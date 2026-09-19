@@ -115,6 +115,13 @@ export interface MatchRunCandidate {
   rrf_score: number
   processing_status: "PENDING" | "COMPLETED" | "FAILED"
   hard_rule_overall: string | null
+  /** Live display fields (PORT-005); null when the profile can no longer be read. */
+  display_name: string | null
+  normalized_skills: string[]
+  years_experience: number | null
+  education_level: string | null
+  /** Source document, for deep-linking a ranking row to the original text. */
+  document_id: string | null
 }
 export interface MatchRunDetail {
   run_id: string
@@ -237,6 +244,9 @@ export interface ReportOut {
   model_snapshot_json: Record<string, unknown>
   created_at: string
   claims: ClaimOut[]
+  /** Live display fields (PORT-005); null when the profile can no longer be read. */
+  display_name: string | null
+  document_id: string | null
 }
 export interface ReportList { reports: ReportOut[] }
 

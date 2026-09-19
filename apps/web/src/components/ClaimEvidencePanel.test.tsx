@@ -38,12 +38,29 @@ function reports(claims: ClaimOut[]): ReportList {
         model_snapshot_json: {},
         created_at: "2026-09-18T00:00:00Z",
         claims,
+        display_name: "张三",
+        document_id: "doc-1",
       },
     ],
   }
 }
 
 describe("ClaimEvidencePanel", () => {
+  it("titles the report with the candidate's name", () => {
+    render(<ClaimEvidencePanel reports={reports([claim()])} />)
+
+    expect(screen.getByRole("heading", { name: "候选人 张三" })).toBeInTheDocument()
+    expect(screen.getByText("辅助追踪")).toBeInTheDocument()
+  })
+
+  it("falls back to a stated label when the profile cannot be read", () => {
+    const list = reports([claim()])
+    list.reports[0].display_name = null
+    render(<ClaimEvidencePanel reports={list} />)
+
+    expect(screen.getByRole("heading", { name: "候选人 未命名候选人" })).toBeInTheDocument()
+  })
+
   it("labels the score as a ranking conversion, not model confidence", () => {
     // The real summary repeats the score, so query the heading specifically
     // rather than by text alone.

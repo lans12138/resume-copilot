@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.candidates.summaries import CandidateDisplaySummary
 from backend.app.reports.models import ReportView
 
 
@@ -58,6 +60,12 @@ class ReportOut(BaseModel):
     model_snapshot_json: dict[str, object]
     created_at: datetime
     claims: list[ClaimOut]
+    # PORT-005: the report heading names the candidate, and the evidence panel
+    # deep-links to the original text. Both are read live from the profile, so both
+    # are optional — a report whose profile can no longer be read still has to be
+    # readable, and the client falls back to the profile id.
+    display_name: str | None = None
+    document_id: UUID | None = None
 
 
 class ReportList(BaseModel):
@@ -66,11 +74,29 @@ class ReportList(BaseModel):
     reports: list[ReportOut]
 
     @classmethod
-    def from_views(cls, views: list[ReportView]) -> ReportList:
-        return cls(reports=[_report_out(view) for view in views])
+    def from_views(
+        cls,
+        views: list[ReportView],
+        summaries: Mapping[UUID, CandidateDisplaySummary] | None = None,
+    ) -> ReportList:
+        """Build the response, optionally naming each report's candidate.
+
+        ``summaries`` is optional so an existing caller that only needs the scored
+        claims does not have to fabricate a lookup; the fields then stay null and the
+        client degrades to the profile id instead of failing.
+        """
+        resolved = summaries or {}
+        return cls(
+            reports=[
+                _report_out(view, resolved.get(view.report.candidate_profile_id))
+                for view in views
+            ]
+        )
 
 
-def _report_out(view: ReportView) -> ReportOut:
+def _report_out(
+    view: ReportView, summary: CandidateDisplaySummary | None = None
+) -> ReportOut:
     return ReportOut(
         id=view.report.id,
         run_id=view.report.run_id,
@@ -81,6 +107,8 @@ def _report_out(view: ReportView) -> ReportOut:
         summary=view.report.summary,
         model_snapshot_json=view.report.model_snapshot_json,
         created_at=view.report.created_at,
+        display_name=summary.display_name if summary else None,
+        document_id=summary.document_id if summary else None,
         claims=[
             ClaimOut(
                 claim_type=claim_view.claim.claim_type,

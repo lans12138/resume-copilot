@@ -116,6 +116,7 @@ export function MatchRunPage() {
           </div>
           <RankingTable
             candidates={run.candidates}
+            jobId={run.job_id}
             onStartApplication={(applicationId) => startApplication.mutate(applicationId)}
             startingApplicationId={startApplication.isPending ? startApplication.variables : undefined}
           />

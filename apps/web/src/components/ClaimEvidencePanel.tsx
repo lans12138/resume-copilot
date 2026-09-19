@@ -1,4 +1,5 @@
 import type { ClaimOut, ReportList } from "../api/types"
+import { candidateName, shortProfileId } from "../lib/candidateDisplay"
 
 const supportLabel: Record<string, string> = {
   SUPPORTED: "支持",
@@ -81,7 +82,14 @@ export function ClaimEvidencePanel({ reports }: { reports: ReportList }) {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Candidate report</p>
-              <h2>候选人 <code>{report.candidate_profile_id.slice(0, 8)}</code></h2>
+              {/* PORT-005: the report is organised by candidate, so it is titled by
+                  name. The profile id stays as a labelled tracking detail — it is what
+                  the API and support use, but it is no longer how a reader identifies
+                  the person. */}
+              <h2>候选人 {candidateName(report.display_name)}</h2>
+              <p className="muted">
+                辅助追踪 <code>{shortProfileId(report.candidate_profile_id)}</code>
+              </p>
             </div>
             {/* PORT-002: name the score for what it is — a ranking conversion, not
                 a model confidence. The backend summary spells this out too. */}
