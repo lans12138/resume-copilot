@@ -37,7 +37,13 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   await expect(page).toHaveURL(/\/application-runs\/[0-9a-f-]+$/)
   await expect(page.getByRole("heading", { name: "单人招聘流程" })).toBeVisible()
   // ApplicationRun starts as CREATED and reaches the first approval in Celery.
-  await expect(page.getByText("等待审批", { exact: true })).toBeVisible({ timeout: 15000 })
+  // PORT-005 made every timeline row render a status badge, so the run status now
+  // appears twice on this page: once in the header (`RunStatusBadge`) and once on
+  // the row that carried the transition. Scope to the header's metadata row — a
+  // bare `getByText` resolves to both, which Playwright's strict mode rejects.
+  await expect(
+    page.locator(".detail-meta").getByText("等待审批", { exact: true }),
+  ).toBeVisible({ timeout: 15000 })
 
   await page.getByRole("link", { name: "查看并决策 →" }).click()
   await expect(page.getByRole("heading", { name: "审批决策" })).toBeVisible()
@@ -55,7 +61,9 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
-  await expect(page.getByText("已完成", { exact: true })).toBeVisible({ timeout: 15000 })
+  await expect(
+    page.locator(".detail-meta").getByText("已完成", { exact: true }),
+  ).toBeVisible({ timeout: 15000 })
   await expect(page.getByText(/SUCCESS/)).toBeVisible()
   await expect(page.getByText("该流程当前没有等待决策的审批", { exact: true })).toBeVisible()
   await expect(page.getByText("已排期", { exact: true })).toBeVisible()

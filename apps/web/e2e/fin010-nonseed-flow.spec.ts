@@ -202,7 +202,13 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   await expect(page).toHaveURL(/\/application-runs\/[0-9a-f-]+$/)
 
   // ---- 6. Two approvals and a scheduled interview -------------------------
-  await expect(page.getByText("等待审批", { exact: true })).toBeVisible({ timeout: 30_000 })
+  // PORT-005 made every timeline row render a status badge, so the run status now
+  // appears twice on this page: once in the header (`RunStatusBadge`) and once on
+  // the timeline row that carried the transition. Scope to the header's metadata
+  // row — a bare `getByText` resolves to both, which strict mode rejects.
+  await expect(
+    page.locator(".detail-meta").getByText("等待审批", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
   await page.getByRole("link", { name: "查看并决策 →" }).click()
   await expect(page.getByRole("region", { name: "动作差异" })).toContainText("更新申请状态")
   await page.getByRole("button", { name: "通过" }).click()
@@ -216,7 +222,9 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
-  await expect(page.getByText("已完成", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.locator(".detail-meta").getByText("已完成", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText("已排期", { exact: true })).toBeVisible()
   // No further approvals are pending: the dual gate is fully consumed.
   await expect(page.getByText("该流程当前没有等待决策的审批", { exact: true })).toBeVisible()

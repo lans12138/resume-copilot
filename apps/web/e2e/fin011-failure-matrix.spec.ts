@@ -48,7 +48,13 @@ test.describe("FIN-011 approval decisions", () => {
     await expect(page.getByText("决策已提交，当前状态：REJECTED")).toBeVisible()
     await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
-    await expect(page.getByText("已完成", { exact: true })).toBeVisible({ timeout: 30_000 })
+    // PORT-005 made every timeline row render a status badge, so the run status now
+    // appears twice on this page: once in the header (`RunStatusBadge`) and once on
+    // the terminal timeline row. Scope to the header's metadata row — a bare
+    // `getByText` resolves to both, which Playwright's strict mode rejects.
+    await expect(
+      page.locator(".detail-meta").getByText("已完成", { exact: true }),
+    ).toBeVisible({ timeout: 30_000 })
     // The reason is rendered inside a sentence — `ApplicationRunPage.tsx:48` prints
     // "申请 {id} · 尝试 {n} · {completion_reason}" as one text run — so no element's
     // *whole* text is the bare token and `{ exact: true }` can never match it.
@@ -550,7 +556,9 @@ async function startApplicationRun(page: Page): Promise<string> {
   // a route faking that stream would then never be exercised at all.
   const runId = page.url().split("/application-runs/")[1] ?? ""
   expect(runId, "the application run page must expose its run id").toMatch(/^[0-9a-f-]{36}$/)
-  await expect(page.getByText("等待审批", { exact: true })).toBeVisible({ timeout: 30_000 })
+  await expect(
+    page.locator(".detail-meta").getByText("等待审批", { exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
   return runId
 }
 
