@@ -219,7 +219,7 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   await expect(page.getByText("已完成", { exact: true })).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText("已排期", { exact: true })).toBeVisible()
   // No further approvals are pending: the dual gate is fully consumed.
-  await expect(page.getByText("该流程当前没有等待决策的审批。", { exact: true })).toBeVisible()
+  await expect(page.getByText("该流程当前没有等待决策的审批", { exact: true })).toBeVisible()
   await page.getByRole("link", { name: "查看面试 →" }).click()
   await expect(page).toHaveURL(/\/interviews\/[0-9a-f-]+$/)
 

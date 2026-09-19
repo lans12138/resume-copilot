@@ -57,7 +57,7 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
 
   await expect(page.getByText("已完成", { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(page.getByText(/SUCCESS/)).toBeVisible()
-  await expect(page.getByText("该流程当前没有等待决策的审批。", { exact: true })).toBeVisible()
+  await expect(page.getByText("该流程当前没有等待决策的审批", { exact: true })).toBeVisible()
   await expect(page.getByText("已排期", { exact: true })).toBeVisible()
   await page.getByRole("link", { name: "查看面试 →" }).click()
 
