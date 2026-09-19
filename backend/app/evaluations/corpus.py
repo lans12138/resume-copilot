@@ -241,6 +241,11 @@ class EvaluationCorpus:
         ``manifest_json`` is deliberately a bounded description, but the hash has
         to cover the thing being evaluated or "same version" would mean "same
         description", which is not the same claim.
+
+        Per-case ``note`` fields are excluded on purpose: they are the rationale
+        for a label, not the label. Including them would make the dataset identity
+        change whenever someone clarified a comment, which is noise rather than a
+        new version.
         """
         return {
             "name": self.name,
@@ -418,7 +423,7 @@ _ARCHETYPES: tuple[_Archetype, ...] = (
     ),
     _Archetype(
         key="case-variant-skills",
-        split=Split.DEV,
+        split=Split.HOLDOUT,
         tags=(CaseTag.SYNONYM_SKILL,),
         note="技能只写大小写/全半角变体，验证归一化后仍能匹配并定位原文。",
         sections=(
@@ -489,7 +494,7 @@ _ARCHETYPES: tuple[_Archetype, ...] = (
     ),
     _Archetype(
         key="cross-segment-evidence",
-        split=Split.DEV,
+        split=Split.HOLDOUT,
         tags=(CaseTag.CROSS_SEGMENT_EVIDENCE,),
         note="年限、技能、学历分处三个段落，验证每个结论各自命中自己那一段。",
         sections=(
@@ -534,7 +539,7 @@ _ARCHETYPES: tuple[_Archetype, ...] = (
     ),
     _Archetype(
         key="unstated-but-confirmed",
-        split=Split.DEV,
+        split=Split.HOLDOUT,
         tags=(),
         note=(
             "复核者按经历日期确认年限为 5.0，但原文从未写出「5 年」→ 结论成立（PASS）"

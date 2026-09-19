@@ -107,6 +107,9 @@ _ANY_DURATION_RE = re.compile(r"(?:\d+(?:\.\d+)?|[一二两三四五六七八九
 
 _HOLDOUT_ARCHETYPES: frozenset[str] = frozenset(
     {
+        "case-variant-skills",
+        "cross-segment-evidence",
+        "unstated-but-confirmed",
         "missing-years",
         "contradictory-years",
         "overlapping-dates",
@@ -177,9 +180,26 @@ def test_the_split_is_dev_and_holdout_and_both_are_non_empty() -> None:
     assert {case.split for case in holdout} == {Split.HOLDOUT}
 
 
-def test_holdout_is_exactly_the_hard_archetypes() -> None:
+def test_holdout_is_exactly_the_declared_holdout_archetypes() -> None:
     """What a threshold is *reported* against is what nobody iterated on."""
     assert {case.archetype for case in BUILTIN_CORPUS.split(Split.HOLDOUT)} == (_HOLDOUT_ARCHETYPES)
+
+
+def test_the_reported_half_covers_every_declared_class() -> None:
+    """The holdout half is what gets published, so it has to be able to measure all of it.
+
+    A support level that only occurs in the dev half is a level the published number
+    cannot be wrong about, and a coverage class that only occurs there is one the
+    report never exercises. Both fail silently: the metrics still print.
+    """
+    holdout = BUILTIN_CORPUS.split(Split.HOLDOUT)
+    assert {item.expected_outcome for case in holdout for item in case.conclusions} == set(
+        HardRuleOutcome
+    )
+    assert {item.expected_support for case in holdout for item in case.conclusions} == set(
+        SupportLevel
+    )
+    assert {tag for case in holdout for tag in case.tags} == set(CaseTag)
 
 
 def test_every_case_tag_is_exercised() -> None:

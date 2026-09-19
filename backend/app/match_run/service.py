@@ -52,6 +52,7 @@ from backend.app.match_run.repository import (
     MatchRunRepository,
 )
 from backend.app.reports.service import EvidenceProvider, ReportService
+from backend.app.retrieval.hard_rules import hard_rule_snapshot
 from backend.app.retrieval.models import FusedCandidate, HardRuleBundle, RankingSnapshot
 from backend.app.sse.notifier import EventNotifier
 
@@ -512,20 +513,8 @@ def _aggregate_status(snapshot: RankingSnapshot, failed_ids: list[UUID]) -> RunS
 def _hard_rule_json(bundle: HardRuleBundle | None) -> dict[str, object]:
     """Serialize a hard-rule verdict to the snapshot JSON column.
 
-    A missing bundle is reported as ``UNKNOWN`` (never guessed ``FAIL``, §8.4).
+    Kept as a thin alias so the MatchRun module's call sites read unchanged; the
+    format itself lives in ``retrieval.hard_rules`` because the offline evaluation
+    must write the identical shape to be scored against.
     """
-    if bundle is None:
-        return {"overall": "UNKNOWN", "rules": []}
-    return {
-        "overall": bundle.overall.value,
-        "rules": [
-            {
-                "rule_id": rule.rule_id.value,
-                "result": rule.result.value,
-                "reason_code": rule.reason_code,
-                "observed_value": rule.observed_value,
-                "required_value": rule.required_value,
-            }
-            for rule in bundle.rules
-        ],
-    }
+    return hard_rule_snapshot(bundle)

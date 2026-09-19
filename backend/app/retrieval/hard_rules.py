@@ -161,6 +161,34 @@ def evaluate_hard_rules(job: JobQuery, profile: ReadyProfile) -> HardRuleBundle:
     return HardRuleBundle(rules=rules, overall=_aggregate(rules))
 
 
+def hard_rule_snapshot(bundle: HardRuleBundle | None) -> dict[str, object]:
+    """Serialize a hard-rule verdict to the snapshot JSON column.
+
+    A missing bundle is reported as ``UNKNOWN`` (never guessed ``FAIL``, §8.4).
+
+    Public because two callers must agree on this wire format: the MatchRun
+    pipeline writes it, and the offline evaluation feeds it back through
+    ``reports.service._parse_hard_rule`` to build a report. A second, locally
+    written serializer would let the evaluation score a rule set the production
+    path never produces — and the difference would look like a metric, not a bug.
+    """
+    if bundle is None:
+        return {"overall": "UNKNOWN", "rules": []}
+    return {
+        "overall": bundle.overall.value,
+        "rules": [
+            {
+                "rule_id": rule.rule_id.value,
+                "result": rule.result.value,
+                "reason_code": rule.reason_code,
+                "observed_value": rule.observed_value,
+                "required_value": rule.required_value,
+            }
+            for rule in bundle.rules
+        ],
+    }
+
+
 def attach_hard_rules(
     fused: list[FusedCandidate], job: JobQuery, profiles: list[ReadyProfile]
 ) -> list[FusedCandidate]:

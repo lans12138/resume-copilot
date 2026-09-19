@@ -37,6 +37,7 @@ from backend.app.documents.parsers import ParsedBlock
 from backend.app.infrastructure.chat_completion import (
     CHAT_COMPLETIONS_PATH,
     ChatCompletionShapeError,
+    UsageRecord,
     extract_message_content,
 )
 from backend.app.infrastructure.http_transport import (
@@ -116,6 +117,10 @@ class QwenChatGateway:
         # Extraction is a structured task: sampling only adds variance to a
         # result that is supposed to be reproducible.
         self._temperature = temperature
+        # Accumulated so a caller can report what a run actually cost. The fake
+        # has no counterpart: a stand-in that invented token counts would make
+        # mock-mode cost figures look like measurements.
+        self.usage = UsageRecord()
 
     @property
     def model(self) -> str:
@@ -173,6 +178,10 @@ class QwenChatGateway:
             timeout=self._timeout,
         )
         envelope = parse_json_object(body)
+        # Recorded before the content is pulled out: a completion that arrived
+        # with an unusable body was still billed, and a cost report that counted
+        # only the calls that parsed would understate what was spent.
+        self.usage.record(dict(envelope))
         return extract_message_content(dict(envelope))
 
 

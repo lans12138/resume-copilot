@@ -14,6 +14,7 @@ and never mistake an HTML error page for a completion.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from backend.app.infrastructure.http_transport import ResponseSchemaError
@@ -72,9 +73,49 @@ def _as_optional_int(value: Any) -> int | None:
     return value if value >= 0 else None
 
 
+@dataclass(slots=True)
+class UsageRecord:
+    """Token counts a gateway observed, accumulated across its calls.
+
+    Two counters rather than one, because "the provider never reported usage" and
+    "the provider reported zero" are different facts and only the second is a
+    measurement. ``calls_with_usage`` makes a partial sum visible: a total built
+    from three of ten calls is not a smaller total, it is an unknown one, and a
+    reader who sees only the number cannot tell.
+
+    Counts are never estimated. A fabricated token count would flow into a cost
+    figure and be indistinguishable from a measured one.
+    """
+
+    calls: int = 0
+    calls_with_usage: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def complete(self) -> bool:
+        """True when every call reported usage, so the totals are a measurement."""
+        return self.calls > 0 and self.calls_with_usage == self.calls
+
+    def record(self, body: dict[str, Any]) -> None:
+        """Fold one completion envelope's usage into the running totals."""
+        self.calls += 1
+        prompt, completion = extract_usage(body)
+        if prompt is None and completion is None:
+            return
+        self.calls_with_usage += 1
+        self.prompt_tokens += prompt or 0
+        self.completion_tokens += completion or 0
+
+
 __all__ = [
     "CHAT_COMPLETIONS_PATH",
     "ChatCompletionShapeError",
+    "UsageRecord",
     "extract_message_content",
     "extract_usage",
 ]
