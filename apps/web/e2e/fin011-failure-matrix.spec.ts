@@ -45,7 +45,7 @@ test.describe("FIN-011 approval decisions", () => {
     // completion_reason=ACTION_REJECTED (approvals/service.py:285-291) and must
     // never advance to the interview-schedule gate.
     await decideOnCurrentApproval(page, "驳回")
-    await expect(page.getByText("决策已提交，当前状态：REJECTED")).toBeVisible()
+    await expect(page.getByText("决策已提交，当前状态：已驳回")).toBeVisible()
     await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
     // PORT-005 made every timeline row render a status badge, so the run status now
@@ -73,7 +73,15 @@ test.describe("FIN-011 approval decisions", () => {
     await expect(
       page.getByRole("heading", { name: "更新申请状态", level: 1 }),
     ).toBeVisible()
-    await expect(page.getByText("SHORTLISTED", { exact: true })).toBeVisible()
+    // The proposal this approval carries, stated by the page itself. Asserting the
+    // bare `SHORTLISTED` token cannot work any more: `paramValue` renders a status
+    // as "已入围（SHORTLISTED）" so the reader sees both the label and the stored
+    // value, and an untouched approval shows it in *both* diff columns — a bare
+    // `getByText` would resolve to two elements. The action sentence is one element
+    // and is the same claim: which status this decision would apply.
+    await expect(
+      page.getByRole("region", { name: "拟执行动作" }).getByText("将申请状态更新为「已入围」。"),
+    ).toBeVisible()
 
     // EDIT is a distinct decision path from APPROVE: `ApprovalPage` sends
     // decision=EDIT with `edited_params` as soon as the edit form has applied
@@ -92,7 +100,7 @@ test.describe("FIN-011 approval decisions", () => {
     await expect(page.getByRole("region", { name: "动作差异" })).toContainText("ON_HOLD")
 
     await page.getByRole("button", { name: "通过" }).click()
-    await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+    await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   })
 
   test("deciding the same approval twice is refused with 409, not a second effect", async ({ page }) => {
@@ -102,7 +110,7 @@ test.describe("FIN-011 approval decisions", () => {
 
     await openCurrentApproval(page)
     await page.getByRole("button", { name: "通过" }).click()
-    await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+    await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
 
     // Re-submitting the same decision is a real duplicate request against a
     // now-non-PENDING approval: `ApprovalService.decide` raises
@@ -111,9 +119,10 @@ test.describe("FIN-011 approval decisions", () => {
     // the controls are gone; the guard is what must hold, not a UI trick.
     await page.reload()
     await expect(page.getByText("该审批已不可决策", { exact: true })).toBeVisible()
-    // `ApprovalPage.tsx:101` renders the status as a sentence with a full stop
-    // ("当前状态：EXECUTED。"), so the bare label is not an exact match.
-    await expect(page.getByText(/当前状态：EXECUTED/)).toBeVisible()
+    // The page renders the status as a sentence with a full stop ("当前状态：已执行。"),
+    // so the bare label is not an exact match — and it is the translated label, not
+    // the `EXECUTED` token the API stores.
+    await expect(page.getByText(/当前状态：已执行/)).toBeVisible()
     await expect(page.getByRole("button", { name: "通过" })).toHaveCount(0)
 
     // The durable proof that the second attempt changed nothing is that the run
@@ -146,7 +155,7 @@ test.describe("FIN-011 approval decisions", () => {
     // Recoverable: unblocking the route lets the same session complete normally.
     await page.unroute("**/api/v1/approvals/*/decision")
     await page.getByRole("button", { name: "通过" }).click()
-    await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+    await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   })
 
   test("INJECTED: an expired approval reports expiry instead of a generic failure", async ({ page }) => {

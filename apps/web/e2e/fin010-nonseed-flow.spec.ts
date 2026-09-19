@@ -26,17 +26,15 @@ const PDF_MEDIA_TYPE = "application/pdf"
 const DEMO_JOB = "[DEMO] 高级后端工程师（Go / Python）"
 
 /**
- * A per-run display name, typed into the review form so the editable-name path is
- * exercised. It is deliberately *not* used as an identity anywhere below:
- * `confirm_profile` writes `profile_json` and never touches
- * `Candidate.display_name` (`candidates/service.py:79` sets it once, from the
- * parsed draft), so this value does not reach the talent pool or the ranking —
- * and the fixture's parsed name already collides with the seeded pool. The
- * per-run *filename* is the real handle: it identifies the upload row, and the
- * document is what resolves to the profile id.
+ * A per-*attempt* id. Playwright re-runs a failed test in the same process, so a
+ * module-level id would be identical on the retry — and both the filename and the
+ * fixture bytes below are derived from this one, for the reason spelled out on
+ * `uniqueFixture`.
  */
-const RUN_ID = `${Date.now()}-${Math.floor(Math.random() * 1000)}`
-const CANDIDATE_NAME = `FIN010 候选人 ${RUN_ID}`
+function attemptId(): string {
+  return `${Date.now()}-${Math.floor(Math.random() * 1000)}-${test.info().retry}`
+}
+
 /**
  * This spec uploads the *PDF* fixture, deliberately, not the DOCX:
  * `document-review.spec.ts` runs earlier in the same suite and ingests
@@ -47,10 +45,18 @@ const CANDIDATE_NAME = `FIN010 候选人 ${RUN_ID}`
  * reaches 待校对, and the assertions below end up inspecting the candidate
  * `document-review.spec.ts` already confirmed. Different bytes, same path.
  *
- * Consequence to keep in mind: a Playwright *retry* of either spec re-uploads
- * the same bytes and therefore lands on 重复 as well.
+ * So the bytes have to differ *per attempt*, not merely per process. A retry of this
+ * spec re-uploads the fixture, and the endpoint — correctly — answers `受理 0、重复 1`:
+ * no fresh document, no 待校对 row, and the flow below fails for a reason that has
+ * nothing to do with the flow. The attempt id is appended *after* the PDF's `%%EOF`,
+ * which is where a reader stops: pymupdf returns the same five blocks for the
+ * appended file as for the original, so parse, extraction and embedding are
+ * unaffected and only the digest moves.
  */
-const FILENAME = `fin010-${RUN_ID}.pdf`
+async function uniqueFixture(attempt: string): Promise<Buffer> {
+  const fixture = await readFile(path.join(FIXTURE_DIR, "e2e-candidate-resume.pdf"))
+  return Buffer.concat([fixture, Buffer.from(`\n% e2e ${attempt}\n`)])
+}
 
 async function signIn(page: Page): Promise<void> {
   await page.goto("/login")
@@ -84,6 +90,20 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   // two approvals, so this is the longest spec in the suite by design.
   test.setTimeout(300_000)
 
+  const attempt = attemptId()
+  /**
+   * The display name, typed into the review form so the editable-name path is
+   * exercised. It is deliberately *not* used as an identity anywhere below:
+   * `confirm_profile` writes `profile_json` and never touches
+   * `Candidate.display_name` (`candidates/service.py:79` sets it once, from the
+   * parsed draft), so this value does not reach the talent pool or the ranking —
+   * and the fixture's parsed name already collides with the seeded pool. The
+   * *filename* is the real handle: it identifies the upload row, and the document
+   * is what resolves to the profile id.
+   */
+  const candidateName = `FIN010 候选人 ${attempt}`
+  const filename = `fin010-${attempt}.pdf`
+
   const pageErrors: string[] = []
   page.on("pageerror", (error) => pageErrors.push(error.message))
 
@@ -92,14 +112,14 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   // ---- 1. Upload a repository fixture and let the worker parse it ----------
   await page.goto("/documents")
   await page.getByLabel("选择文件").setInputFiles({
-    name: FILENAME,
+    name: filename,
     mimeType: PDF_MEDIA_TYPE,
-    buffer: await readFile(path.join(FIXTURE_DIR, "e2e-candidate-resume.pdf")),
+    buffer: await uniqueFixture(attempt),
   })
   await page.getByRole("button", { name: "上传并解析" }).click()
   await expect(page.getByText(/本批共 1 个文件：受理 1/)).toBeVisible()
 
-  const queueRow = page.getByRole("row", { name: new RegExp(FILENAME) })
+  const queueRow = page.getByRole("row", { name: new RegExp(filename) })
   await pollFor(page, "the upload to reach 待校对", async () => {
     await page.getByRole("button", { name: "刷新" }).click()
     return (await queueRow.textContent())?.includes("待校对") ?? false
@@ -113,7 +133,7 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   const documentId = (reviewHref ?? "").match(/\/documents\/([0-9a-f-]+)/)?.[1] ?? ""
   expect(documentId, `unexpected review link: ${reviewHref}`).toMatch(/^[0-9a-f-]{36}$/)
   await reviewLink.click()
-  await expect(page.getByRole("heading", { name: FILENAME })).toBeVisible()
+  await expect(page.getByRole("heading", { name: filename })).toBeVisible()
   await pollFor(page, "the profile draft", async () => {
     if (await page.getByLabel("姓名").isVisible().catch(() => false)) return true
     await page.reload()
@@ -123,8 +143,8 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
   await page.getByLabel("写操作岗位").selectOption({ label: DEMO_JOB })
   await expect(page.getByRole("button", { name: "确认资料" })).toBeEnabled()
   // The review form must accept a corrected name — that is the edit path under
-  // test — but the value is not an identity; see the note on CANDIDATE_NAME.
-  await page.getByLabel("姓名").fill(CANDIDATE_NAME)
+  // test — but the value is not an identity; see the note on `candidateName`.
+  await page.getByLabel("姓名").fill(candidateName)
   await page.getByLabel("工作年限").fill("6")
   await page.getByRole("button", { name: "确认资料" }).click()
   await expect(page.getByText("资料 已就绪")).toBeVisible()
@@ -216,7 +236,7 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
     page.getByRole("heading", { name: "更新申请状态", level: 1 }),
   ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
-  await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+  await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
   await expect(page.getByText("创建面试安排", { exact: true })).toBeVisible({ timeout: 30_000 })
@@ -225,7 +245,7 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
     page.getByRole("heading", { name: "创建面试安排", level: 1 }),
   ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
-  await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+  await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
   await expect(
@@ -258,7 +278,7 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
  *  * the ranking table shows only `candidate_profile_id.slice(0, 8)`
  *    (`RankingTable.tsx:40`).
  *
- * The document is unambiguous, because the uploaded filename is unique per run.
+ * The document is unambiguous, because the uploaded filename is unique per attempt.
  * Resolved through the endpoint the review page itself uses, so the assertion
  * still rests on the public contract rather than on a test-only shortcut.
  */

@@ -54,9 +54,16 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   await expect(
     page.getByRole("heading", { name: "更新申请状态", level: 1 }),
   ).toBeVisible()
-  await expect(page.getByText("SHORTLISTED", { exact: true })).toBeVisible()
+  // The proposal this approval carries, stated by the page itself. The bare
+  // `SHORTLISTED` token is no longer addressable: `paramValue` renders a status as
+  // "已入围（SHORTLISTED）", and an untouched approval shows that in both diff columns,
+  // so a bare `getByText` would resolve to two elements. The action sentence is one
+  // element and makes the same claim — which status this decision would apply.
+  await expect(
+    page.getByRole("region", { name: "拟执行动作" }).getByText("将申请状态更新为「已入围」。"),
+  ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
-  await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+  await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
   await expect(page.getByText("Question 1", { exact: true })).toBeVisible({ timeout: 15000 })
@@ -66,7 +73,7 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
     page.getByRole("heading", { name: "创建面试安排", level: 1 }),
   ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
-  await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
+  await expect(page.getByText("决策已提交，当前状态：已执行")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
   await expect(
