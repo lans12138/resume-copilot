@@ -1,7 +1,7 @@
 """Match-explanation orchestration: verify, degrade, persist (PORT-003).
 
 The service sits between an untrusted model reply and the report, and its job is
-to make the second one safe to read. Three properties it enforces:
+to make the second one safe to read. Four properties it enforces:
 
 **Nothing unbacked reaches the report.** Every citation a model offers is
 re-checked against the candidate's *own* chunks: the chunk must exist, the quote
@@ -22,6 +22,14 @@ malformed reply or an invented chunk id is recorded as a reason code on the
 explanation row and the run stays ``COMPLETED``. There is no path from here to an
 approval, a side effect or a status change (BR-001, BR-007): this service writes
 report claims and one call record, and nothing else.
+
+**Model conclusions are numbered after the report's own, and replace them on a
+retry.** The two writers share one ``display_order`` column on ``report_claims``
+(``uq_report_claims_order`` is ``(report_id, display_order)``), so restarting the
+sequence at 1 would collide with the first rule claim of every report that has
+one. The pass also drops the model claims it wrote last time before writing new
+ones: the deterministic pass owns the rule claims and rewrites them wholesale,
+but nothing else would ever remove this service's own rows.
 """
 
 from __future__ import annotations
@@ -164,6 +172,21 @@ def locate_citation(
     return candidate_row if verdict.legal else None
 
 
+def next_display_order(claims: list[ClaimView]) -> int:
+    """Where this writer's numbering starts on a report that already has claims.
+
+    ``uq_report_claims_order`` is ``(report_id, display_order)``, and two writers
+    share that one column: ``ReportService`` numbers the deterministic claims from
+    0 (the aggregate verdict) through n, and this service appends model
+    conclusions to the same report. Restarting at 1 collides with the first rule
+    claim of every report that has one — an ``IntegrityError`` raised inside the
+    pass, which the worker retries and then abandons, leaving the run without a
+    terminal status. Continuing the sequence also reads correctly: the verdict and
+    the rules it is built from come first, the commentary on them after.
+    """
+    return max((view.claim.display_order for view in claims), default=-1) + 1
+
+
 def _verdict_text(rule_claims: list[ClaimView]) -> str:
     """Render the deterministic verdicts as fixed context for the prompt.
 
@@ -223,6 +246,14 @@ class MatchExplanationService:
     ) -> ExplanationRunResult:
         """Explain every COMPLETED candidate's report; never raise on model faults."""
         await self._explanations.delete_by_run(run.id)
+        # The model claims an earlier attempt wrote go too. ``ReportService``
+        # replaces its own rows by deleting the whole report, but this service
+        # annotates a report it does not own, so nothing else would ever remove
+        # its previous conclusions — a retry would leave two attempts' model
+        # claims on one report and collide on ``uq_report_claims_order`` while
+        # adding them. Rule claims are untouched: they belong to ``ReportService``
+        # and are still what is being commented on.
+        await self._reports.delete_claims_by_source(run.id, ClaimSource.MODEL)
         report_by_profile = {
             view.report.candidate_profile_id: view
             for view in await self._reports.list_by_run(run.id)
@@ -356,6 +387,9 @@ class MatchExplanationService:
             report_id=report_view.report.id,
             candidate_profile_id=candidate.candidate_profile_id,
             chunks=chunks,
+            # The report's claims were read back *after* this pass removed its own
+            # previous model claims, so this is genuinely the first free slot.
+            first_display_order=next_display_order(report_view.claims),
         )
         status = ExplanationStatus.SUCCEEDED
         reason = ExplanationReason.OK
@@ -390,6 +424,7 @@ class MatchExplanationService:
         report_id: UUID,
         candidate_profile_id: UUID,
         chunks: list[EvidenceChunk],
+        first_display_order: int,
     ) -> tuple[list[_VerifiedConclusion], _Counters]:
         """Keep only conclusions the server can back with the candidate's own text."""
         by_id = {chunk.id: chunk for chunk in chunks}
@@ -409,7 +444,9 @@ class MatchExplanationService:
                     report_id=report_id,
                     conclusion=conclusion,
                     evidences=evidences,
-                    display_order=len(kept) + 1,
+                    # Continues the report's own sequence rather than restarting
+                    # it — see ``next_display_order``.
+                    display_order=first_display_order + len(kept),
                     index=index,
                 )
             )
@@ -539,4 +576,5 @@ __all__ = [
     "MatchExplanationService",
     "classify_failure",
     "locate_citation",
+    "next_display_order",
 ]

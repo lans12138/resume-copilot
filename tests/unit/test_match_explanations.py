@@ -1308,3 +1308,129 @@ def test_report_claims_expose_their_source_in_the_response() -> None:
     schema = create_app(make_settings()).openapi()
     properties = schema["components"]["schemas"]["ClaimOut"]["properties"]
     assert "source" in properties
+
+
+# --------------------------------------------------------------------------- #
+# Ordering: two writers, one display_order column
+# --------------------------------------------------------------------------- #
+
+
+def test_model_claims_continue_the_reports_own_display_order() -> None:
+    """Two writers share ``uq_report_claims_order``, so the second must not restart.
+
+    ``ReportService`` numbers a report's deterministic claims from 0 and this
+    service appends model conclusions to that same report. Restarting at 1
+    collides with the first rule claim of every report that has one, and the
+    collision lands *inside* the pass: the worker retries a deterministic failure,
+    exhausts its budget, and the run never reaches a terminal status.
+
+    The in-memory repository cannot raise that constraint, so what is asserted is
+    the invariant the constraint enforces — one report's claims carry one strictly
+    increasing sequence, the verdict and its rules first.
+    """
+    profile = uuid4()
+    chunks = _resume_chunks(profile)
+    job = _job(required_skills=["python"])
+    run = _agent_run(uuid4())
+    match_run = _match_run(run.id, job)
+    candidate = _match_candidate(profile)
+    reports = _seed_report(
+        run=run, match_run=match_run, candidates=[candidate], chunks={profile: chunks}
+    )
+
+    # Two citable conclusions, so the model contributes more than one row and a
+    # restart would collide twice rather than once.
+    gateway = _StubGateway(
+        draft=_draft(
+            _conclusion(
+                "候选人有 5 年 Python 后端经验。",
+                [(chunks[0].id, "5 年 Python 后端开发")],
+            ),
+            _conclusion(
+                "候选人参与过支付网关重构。",
+                [(chunks[1].id, "参与过支付网关重构")],
+            ),
+        )
+    )
+    service, _ = _service(reports, gateway)
+    result = _explain(
+        service=service,
+        run=run,
+        match_run=match_run,
+        candidates=[candidate],
+        chunks={profile: chunks},
+        job=job,
+    )
+    assert result.conclusions_kept == 2
+
+    view = _claims_of(reports, run.id)[profile]
+    orders = [claim_view.claim.display_order for claim_view in view.claims]
+    assert len(orders) == len(set(orders)), orders
+    assert orders == sorted(orders)
+
+    # ``_rule_json`` declares two hard rules, numbered 1 and 2, plus the
+    # aggregate verdict at 0.
+    assert [
+        c.claim.display_order for c in view.claims if c.claim.source == ClaimSource.RULE
+    ] == [0, 1, 2]
+    assert [
+        c.claim.display_order for c in view.claims if c.claim.source == ClaimSource.MODEL
+    ] == [3, 4]
+
+
+def test_a_second_pass_replaces_the_model_claims_instead_of_adding_a_set() -> None:
+    """A retry must leave one attempt's conclusions, not two.
+
+    The deterministic pass owns the rule claims and replaces them by deleting the
+    whole report. This service annotates a report it does not own, so it has to
+    remove its own previous rows explicitly — otherwise the second pass appends
+    beside the first attempt's claims, and inserting them hits the very unique
+    constraint it is trying to write past.
+    """
+    profile = uuid4()
+    chunks = _resume_chunks(profile)
+    job = _job(required_skills=["python"])
+    run = _agent_run(uuid4())
+    match_run = _match_run(run.id, job)
+    candidate = _match_candidate(profile)
+    reports = _seed_report(
+        run=run, match_run=match_run, candidates=[candidate], chunks={profile: chunks}
+    )
+    gateway = _StubGateway(
+        draft=_draft(
+            _conclusion(
+                "候选人有 5 年 Python 后端经验。",
+                [(chunks[0].id, "5 年 Python 后端开发")],
+            )
+        )
+    )
+    service, explanations = _service(reports, gateway)
+
+    for _ in range(2):
+        result = _explain(
+            service=service,
+            run=run,
+            match_run=match_run,
+            candidates=[candidate],
+            chunks={profile: chunks},
+            job=job,
+        )
+        assert result.conclusions_kept == 1
+
+    view = _claims_of(reports, run.id)[profile]
+    model_claims = [
+        claim_view
+        for claim_view in view.claims
+        if claim_view.claim.source == ClaimSource.MODEL
+    ]
+    assert len(model_claims) == 1
+    # The evidence rows are children of the claim, so a leaked claim would show up
+    # here as a duplicated citation rather than as a stray row.
+    assert len(model_claims[0].evidences) == 1
+
+    orders = [claim_view.claim.display_order for claim_view in view.claims]
+    assert len(orders) == len(set(orders)), orders
+    assert orders == sorted(orders)
+    # Exactly one explanation row per attempt, and the second pass is the one
+    # whose summary survives.
+    assert len(asyncio.run(explanations.list_by_run(run.id))) == 1

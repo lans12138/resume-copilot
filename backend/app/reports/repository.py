@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.reports.models import (
     ClaimEvidence,
+    ClaimSource,
     ClaimView,
     MatchReport,
     ReportClaim,
@@ -35,6 +36,8 @@ class ReportRepository(Protocol):
     async def save_evidence(self, evidence: ClaimEvidence) -> None: ...
 
     async def delete_by_run(self, run_id: UUID) -> None: ...
+
+    async def delete_claims_by_source(self, run_id: UUID, source: ClaimSource) -> None: ...
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]: ...
 
@@ -72,6 +75,19 @@ class InMemoryReportRepository:
             self._evidences = [
                 e for e in self._evidences if e.claim_id in self._claims
             ]
+
+    async def delete_claims_by_source(self, run_id: UUID, source: ClaimSource) -> None:
+        async with self._lock:
+            report_ids = {r.id for r in self._reports.values() if r.run_id == run_id}
+            doomed = {
+                cid
+                for cid, claim in self._claims.items()
+                if claim.report_id in report_ids and claim.source == source
+            }
+            self._claims = {
+                cid: claim for cid, claim in self._claims.items() if cid not in doomed
+            }
+            self._evidences = [e for e in self._evidences if e.claim_id not in doomed]
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]:
         async with self._lock:
@@ -134,6 +150,30 @@ class SqlReportRepository:
             delete(ReportClaim).where(ReportClaim.report_id.in_(report_ids))
         )
         await self._session.execute(delete(MatchReport).where(MatchReport.run_id == run_id))
+        await self._session.flush()
+
+    async def delete_claims_by_source(self, run_id: UUID, source: ClaimSource) -> None:
+        """Drop one writer's claims from a run's reports, leaving the other's.
+
+        ``delete_by_run`` is all-or-nothing because ``ReportService`` rewrites a
+        run's reports wholesale. The explanation pass has no such step — the
+        reports it annotates are built by someone else and must survive — so it
+        needs a delete that reaches its own rows and nothing else. Without one, a
+        retry writes a second set of model conclusions beside the first attempt's
+        and collides on ``uq_report_claims_order`` while doing so.
+        """
+        report_ids = select(MatchReport.id).where(MatchReport.run_id == run_id)
+        claim_ids = select(ReportClaim.id).where(
+            ReportClaim.report_id.in_(report_ids), ReportClaim.source == source
+        )
+        await self._session.execute(
+            delete(ClaimEvidence).where(ClaimEvidence.claim_id.in_(claim_ids))
+        )
+        await self._session.execute(
+            delete(ReportClaim).where(
+                ReportClaim.report_id.in_(report_ids), ReportClaim.source == source
+            )
+        )
         await self._session.flush()
 
     async def list_by_run(self, run_id: UUID) -> list[ReportView]:
