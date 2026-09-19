@@ -163,4 +163,34 @@ describe("ApprovalPage", () => {
     // The action sentence follows the final parameters, not the original proposal.
     expect(within(panel("拟执行动作")).getByText("将申请状态更新为「暂缓」。")).toBeInTheDocument()
   })
+
+  // The browser specs navigate here and then ask the page which action is being
+  // authorised. PORT-005 (`e3c072f`) moved that answer from the 动作差异 panel to the
+  // page heading, which left them asserting a heading named "审批决策" — a name that
+  // does exist in the app, as the decision button group's `aria-label`, and therefore
+  // survives every text-level search — and an action name inside a panel that now
+  // holds only the parameter diff. Pin the shape they rely on, so the next move is
+  // caught here instead of in the browser gate.
+  it("names the action in the page heading, not in the parameter diff", async () => {
+    stubApproval([approval("PENDING")])
+    renderPage()
+
+    // Exactly one level-1 heading, and it is the action: the specs locate it by name
+    // *and* level, so a second one would fail them in strict mode.
+    const headings = await screen.findAllByRole("heading", { level: 1 })
+    expect(headings).toHaveLength(1)
+    expect(headings[0]).toHaveTextContent("更新申请状态")
+
+    // "审批决策" labels the decision button group. It is not a heading, and a spec
+    // that looks for it as one finds nothing.
+    expect(screen.queryByRole("heading", { name: "审批决策" })).not.toBeInTheDocument()
+    expect(screen.getByRole("group", { name: "审批决策" })).toBeInTheDocument()
+
+    // The panel a shared "we are on the approval screen" helper can wait on, since
+    // the heading it used to wait on is now action-specific.
+    expect(panel("拟执行动作")).toBeInTheDocument()
+
+    // And the panel that used to carry the action name no longer does.
+    expect(panel("动作差异")).not.toHaveTextContent("更新申请状态")
+  })
 })

@@ -210,14 +210,20 @@ test("a freshly uploaded resume runs the whole recruiting path", async ({ page }
     page.locator(".detail-meta").getByText("等待审批", { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   await page.getByRole("link", { name: "查看并决策 →" }).click()
-  await expect(page.getByRole("region", { name: "动作差异" })).toContainText("更新申请状态")
+  // PORT-005 (`e3c072f`) left only the parameter diff inside 动作差异; the action
+  // being authorised is now the page heading.
+  await expect(
+    page.getByRole("heading", { name: "更新申请状态", level: 1 }),
+  ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
 
   await expect(page.getByText("创建面试安排", { exact: true })).toBeVisible({ timeout: 30_000 })
   await page.getByRole("link", { name: "查看并决策 →" }).click()
-  await expect(page.getByRole("region", { name: "动作差异" })).toContainText("创建面试安排")
+  await expect(
+    page.getByRole("heading", { name: "创建面试安排", level: 1 }),
+  ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()

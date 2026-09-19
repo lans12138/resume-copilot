@@ -70,7 +70,9 @@ test.describe("FIN-011 approval decisions", () => {
     await startApplicationRun(page)
 
     await openCurrentApproval(page)
-    await expect(page.getByRole("region", { name: "动作差异" })).toContainText("更新申请状态")
+    await expect(
+      page.getByRole("heading", { name: "更新申请状态", level: 1 }),
+    ).toBeVisible()
     await expect(page.getByText("SHORTLISTED", { exact: true })).toBeVisible()
 
     // EDIT is a distinct decision path from APPROVE: `ApprovalPage` sends
@@ -564,7 +566,12 @@ async function startApplicationRun(page: Page): Promise<string> {
 
 async function openCurrentApproval(page: Page): Promise<void> {
   await page.getByRole("link", { name: "查看并决策 →" }).click()
-  await expect(page.getByRole("heading", { name: "审批决策" })).toBeVisible()
+  // PORT-005 (`e3c072f`) split this screen into four panels and made the page
+  // heading the *action's* own name ("更新申请状态"), so "审批决策" is no longer a
+  // heading anywhere. This helper is shared by tests that approve, edit and reject,
+  // so it waits for the panel stating what is about to be applied — which is the
+  // screen's own subject — rather than for one particular action.
+  await expect(page.getByRole("region", { name: "拟执行动作" })).toBeVisible()
 }
 
 async function decideOnCurrentApproval(page: Page, action: "通过" | "驳回"): Promise<void> {

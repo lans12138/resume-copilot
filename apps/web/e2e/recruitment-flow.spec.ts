@@ -46,8 +46,14 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   ).toBeVisible({ timeout: 15000 })
 
   await page.getByRole("link", { name: "查看并决策 →" }).click()
-  await expect(page.getByRole("heading", { name: "审批决策" })).toBeVisible()
-  await expect(page.getByRole("region", { name: "动作差异" })).toContainText("更新申请状态")
+  // PORT-005 (`e3c072f`) made the approval page's heading the action's own name and
+  // left only the parameter diff inside 动作差异, so "审批决策" is no longer a
+  // heading and the action name is no longer in that region. The heading now carries
+  // both things the two assertions were after: that this is the approval screen, and
+  // which action is being authorised.
+  await expect(
+    page.getByRole("heading", { name: "更新申请状态", level: 1 }),
+  ).toBeVisible()
   await expect(page.getByText("SHORTLISTED", { exact: true })).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
@@ -56,7 +62,9 @@ test("HR completes match, dual approval, and interview scheduling", async ({ pag
   await expect(page.getByText("Question 1", { exact: true })).toBeVisible({ timeout: 15000 })
   await expect(page.getByText("创建面试安排", { exact: true })).toBeVisible()
   await page.getByRole("link", { name: "查看并决策 →" }).click()
-  await expect(page.getByRole("region", { name: "动作差异" })).toContainText("创建面试安排")
+  await expect(
+    page.getByRole("heading", { name: "创建面试安排", level: 1 }),
+  ).toBeVisible()
   await page.getByRole("button", { name: "通过" }).click()
   await expect(page.getByText("决策已提交，当前状态：EXECUTED")).toBeVisible()
   await page.getByRole("link", { name: "返回申请流程查看结果 →" }).click()
