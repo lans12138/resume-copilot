@@ -85,6 +85,10 @@ flowchart TB
 
 **Nginx 是唯一公开入口**：前端只发同源请求（`/api/v1/...`），由代理决定上游，因此同一份静态产物可部署到任意环境。API 与数据库端口即使在本地也只绑定 `127.0.0.1`。
 
+**写入路径只有一条**：ApplicationRun 的副作用节点只产出 typed state，真正写表的是 `Approval` 决定之后由 `SideEffect` 服务执行的动作。因此「恢复之后不会多写一次」是可以被断言的事实，而不是设计意图——证据见 [`docs/release/no-duplicate-write.md`](./docs/release/no-duplicate-write.md)（含三层独立守卫、断言位置与复现命令）。
+
+同一张架构图的独立渲染版本（可放进幻灯片 / PDF，不依赖 Mermaid 渲染器）：[`docs/architecture.svg`](./docs/architecture.svg)。
+
 ## 技术栈
 
 | 层 | 选型 |

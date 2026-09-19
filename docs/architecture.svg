@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 1020" width="1240" height="1020" role="img" aria-labelledby="archTitle archDesc" font-family="Segoe UI, PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif">
+  <title id="archTitle">resume-copilot 架构图</title>
+  <desc id="archDesc">浏览器经 Nginx 唯一公开入口访问前端，前端以同源 REST 与 SSE 调用 FastAPI。API 内有 MatchRun 与 ApplicationRun 两张运行图、Approval 状态机、SideEffect 服务与 SSE 持续授权流。持久化层为 PostgreSQL 加 pgvector、AgentEvent 审计流、Redis 与 Celery。</desc>
+
+  <rect x="0" y="0" width="1240" height="1020" fill="#ffffff"/>
+
+  <text x="48" y="58" font-size="30" font-weight="700" fill="#1f2328">resume-copilot 架构</text>
+  <text x="48" y="92" font-size="16" fill="#5b6673">单 Agent 双运行图 · Nginx 是唯一公开入口 · 副作用经人工审批后由 SideEffect 服务写入</text>
+
+  <!-- 浏览器 -->
+  <rect x="500" y="124" width="240" height="56" rx="10" fill="#ffffff" stroke="#cbd2d9" stroke-width="1.5"/>
+  <text x="620" y="158" font-size="17" text-anchor="middle" fill="#1f2328">浏览器</text>
+
+  <line x1="620" y1="180" x2="620" y2="208" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="620,214 615,203 625,203" fill="#5b6673"/>
+  <text x="636" y="200" font-size="13" fill="#5b6673">HTTPS / 127.0.0.1:8080</text>
+
+  <!-- web 服务 -->
+  <rect x="300" y="214" width="640" height="88" rx="10" fill="#ffffff" stroke="#cbd2d9" stroke-width="1.5"/>
+  <text x="324" y="248" font-size="17" font-weight="700" fill="#1f2328">web 服务 · 唯一公开入口</text>
+  <text x="324" y="276" font-size="14" fill="#5b6673">Nginx 1.29.3-alpine：静态 SPA + /api 反向代理，两条 SSE 路由关缓冲</text>
+
+  <line x1="620" y1="302" x2="620" y2="330" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="620,336 615,325 625,325" fill="#5b6673"/>
+
+  <!-- 前端 -->
+  <rect x="300" y="336" width="640" height="88" rx="10" fill="#ffffff" stroke="#cbd2d9" stroke-width="1.5"/>
+  <text x="324" y="366" font-size="17" font-weight="700" fill="#1f2328">前端 · React 19 + TypeScript + Vite</text>
+  <text x="324" y="392" font-size="13.5" fill="#5b6673">RunTimeline · RankingTable · ClaimEvidencePanel</text>
+  <text x="324" y="414" font-size="13.5" fill="#5b6673">Approval · DecisionActions · QuestionSet · ScheduleResult · Evaluations</text>
+
+  <line x1="620" y1="424" x2="620" y2="452" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="620,458 615,447 625,447" fill="#5b6673"/>
+  <text x="636" y="446" font-size="13" fill="#5b6673">同源 /api/v1 REST + SSE（Bearer 头透传）</text>
+
+  <!-- API band -->
+  <rect x="140" y="458" width="960" height="280" rx="12" fill="#f2f4f7"/>
+  <text x="164" y="490" font-size="16" font-weight="700" fill="#1f2328">API · FastAPI + Pydantic v2</text>
+
+  <rect x="164" y="506" width="160" height="180" rx="9" fill="#ffffff" stroke="#7aa2c8" stroke-width="1.5"/>
+  <text x="244" y="548" font-size="15" font-weight="700" text-anchor="middle" fill="#1f2328">MatchRun 图</text>
+  <text x="244" y="582" font-size="12.5" text-anchor="middle" fill="#5b6673">岗位级批量分析</text>
+  <text x="244" y="608" font-size="12.5" text-anchor="middle" fill="#2f6f4e">只读 · 无副作用</text>
+  <text x="244" y="634" font-size="12.5" text-anchor="middle" fill="#5b6673">不创建 Approval</text>
+
+  <line x1="326" y1="596" x2="348" y2="596" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="354,596 343,591 343,601" fill="#5b6673"/>
+
+  <rect x="352" y="506" width="160" height="180" rx="9" fill="#ffffff" stroke="#7aa2c8" stroke-width="1.5"/>
+  <text x="432" y="547" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">ApplicationRun 图</text>
+  <text x="432" y="582" font-size="12.5" text-anchor="middle" fill="#5b6673">固定 8 节点</text>
+  <text x="432" y="608" font-size="12.5" text-anchor="middle" fill="#5b6673">human_review 主中断</text>
+  <text x="432" y="634" font-size="12.5" text-anchor="middle" fill="#5b6673">排期条件中断</text>
+
+  <line x1="514" y1="596" x2="536" y2="596" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="542,596 531,591 531,601" fill="#5b6673"/>
+
+  <rect x="540" y="506" width="160" height="180" rx="9" fill="#ffffff" stroke="#7aa2c8" stroke-width="1.5"/>
+  <text x="620" y="548" font-size="15" font-weight="700" text-anchor="middle" fill="#1f2328">Approval 状态机</text>
+  <text x="620" y="582" font-size="12.5" text-anchor="middle" fill="#5b6673">幂等键</text>
+  <text x="620" y="608" font-size="12.5" text-anchor="middle" fill="#5b6673">决定只记录一次</text>
+  <text x="620" y="634" font-size="12.5" text-anchor="middle" fill="#2f6f4e">已批准 ≠ 已执行</text>
+
+  <line x1="702" y1="596" x2="724" y2="596" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="730,596 719,591 719,601" fill="#5b6673"/>
+
+  <rect x="728" y="506" width="160" height="180" rx="9" fill="#ffffff" stroke="#7aa2c8" stroke-width="1.5"/>
+  <text x="808" y="548" font-size="15" font-weight="700" text-anchor="middle" fill="#1f2328">SideEffect 服务</text>
+  <text x="808" y="582" font-size="12.5" text-anchor="middle" fill="#5b6673">乐观锁 CAS</text>
+  <text x="808" y="608" font-size="12.5" text-anchor="middle" fill="#5b6673">幂等执行一次</text>
+  <text x="808" y="634" font-size="12.5" text-anchor="middle" fill="#5b6673">节点本身不写库</text>
+
+  <rect x="916" y="506" width="160" height="180" rx="9" fill="#ffffff" stroke="#7aa2c8" stroke-width="1.5"/>
+  <text x="996" y="548" font-size="15" font-weight="700" text-anchor="middle" fill="#1f2328">SSE 持续授权流</text>
+  <text x="996" y="582" font-size="12.5" text-anchor="middle" fill="#5b6673">单调序列号</text>
+  <text x="996" y="608" font-size="12.5" text-anchor="middle" fill="#5b6673">断线续传</text>
+  <text x="996" y="634" font-size="12.5" text-anchor="middle" fill="#5b6673">在线撤权</text>
+
+  <text x="164" y="716" font-size="13" fill="#5b6673">两图隔离靠 JobApplication 活动 Run 排他槽 + Approval 幂等键；MatchRun 跑完即止，不创建 Approval、不改申请状态。</text>
+
+  <!-- 隔离说明 -->
+  <rect x="140" y="754" width="960" height="48" rx="9" fill="#ffffff" stroke="#b8a37a" stroke-width="1.5" stroke-dasharray="7 5"/>
+  <text x="164" y="784" font-size="13.5" fill="#1f2328">写入路径只有一条：ApplicationRun 的副作用节点只产出 typed state → Approval 决定 → SideEffect 服务写表。</text>
+
+  <line x1="620" y1="802" x2="620" y2="812" stroke="#5b6673" stroke-width="1.6"/>
+  <polygon points="620,818 615,807 625,807" fill="#5b6673"/>
+  <text x="636" y="796" font-size="13" fill="#5b6673">经 Unit of Work</text>
+
+  <!-- 持久化与任务 -->
+  <rect x="140" y="818" width="960" height="150" rx="12" fill="#f2f4f7"/>
+  <text x="164" y="850" font-size="16" font-weight="700" fill="#1f2328">持久化与任务</text>
+
+  <rect x="164" y="864" width="216" height="64" rx="9" fill="#ffffff" stroke="#b8a37a" stroke-width="1.5"/>
+  <text x="272" y="892" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">PostgreSQL 17 + pgvector</text>
+  <text x="272" y="914" font-size="12.5" text-anchor="middle" fill="#5b6673">1024 维向量 · 唯一事实来源</text>
+
+  <rect x="396" y="864" width="216" height="64" rx="9" fill="#ffffff" stroke="#b8a37a" stroke-width="1.5"/>
+  <text x="504" y="892" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">AgentEvent 审计流</text>
+  <text x="504" y="914" font-size="12.5" text-anchor="middle" fill="#5b6673">序列号 · 前端不重复渲染</text>
+
+  <rect x="628" y="864" width="216" height="64" rx="9" fill="#ffffff" stroke="#b8a37a" stroke-width="1.5"/>
+  <text x="736" y="892" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">Redis 7</text>
+  <text x="736" y="914" font-size="12.5" text-anchor="middle" fill="#5b6673">队列 · SSE 授权</text>
+
+  <rect x="860" y="864" width="216" height="64" rx="9" fill="#ffffff" stroke="#b8a37a" stroke-width="1.5"/>
+  <text x="968" y="892" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">Celery Worker / Beat</text>
+  <text x="968" y="914" font-size="12.5" text-anchor="middle" fill="#5b6673">解析 · 重试 · 过期扫描</text>
+
+  <text x="48" y="1000" font-size="13" fill="#5b6673">Agent 运行时是自研 RunEngine + SqlCheckpointer，不是 LangGraph；决策记录见 docs/adr/0001。默认 Mock 模型模式，真实模型入口为 python scripts/run_evaluation.py --live。</text>
+</svg>
