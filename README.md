@@ -283,6 +283,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | PORT-003 真实模型匹配解释闭环 | ✅ DONE（首个验收项待凭据）：新增封闭的模型解释契约（`extra="forbid"`、`impact` 仅 `LOW/MEDIUM`，模型要求 `HIGH` 判为契约违规而非夹取）、Qwen 解释适配器与确定性 Fake；模型引用在持久化前经服务端反查切片并走同一套 §9.4 校验，模型结论支持等级上限为 `PARTIAL`；429 / 超时 / Schema 错误 / 非法引用各有独立 `reason_code`，模型故障不影响 run 终态、不触发审批或副作用；`match_explanations` 记录模型、Prompt、规则版本、耗时、重试与可获得的 Token usage，报告结论以 `source` 区分规则判定与模型解释。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-004 实际输出评测与录制回放 | ✅ DONE（真实模型项待凭据）：52 例由原始简历文本与岗位输入驱动的评测集（13 类画像 × 4 类岗位，DEV/HOLDOUT 分离），标准答案独立标注；预测由真实链路产生（网关抽取 → 召回 → 硬性规则 → 报告 → 真实 `ApplicationRun` 图），并按 `SCORER_FIXTURE` / `FAKE_MODEL` / `RECORDED_REPLAY` / `LIVE_MODEL` 分开报告、拒绝合并；28 组原始 clean / injected 文本对走同一条链路，「模型是否遵循攻击内容」与「系统是否放行越权 / 副作用 / 审批绕过」分别记录；空语料、缺录制、门禁不可达、超出调用预算一律失败退出。`python scripts/run_evaluation.py --k 5 --split holdout` 为唯一入口。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-005 关键页面与演示体验 | ✅ DONE（浏览器与投屏项未执行）：排名与报告以候选人姓名和事实摘要呈现，Profile ID 降为「辅助追踪」；每条证据标出页码 / 段落并可直接打开原文定位（`?chunk=`），证据属于旧版本时明说而不是静默失败；时间线只显示可读节点名、状态与失败原因，事件类型 / 消息键 / 载荷收进辅助详情；审批页按「拟执行动作 → 原提案与参数 → 当前版本 → 执行结果」组织，并区分「决策已记录但尚未写入」（`APPROVED` / `EDITED`）与「恰好落库一次」（`EXECUTED`）；`GET /api/v1/runtime/model-mode` 在每页顶部标明当前是真实模型还是 Mock 及其证明范围，报告标出结论来源，错误与终态各自给出恢复指引。**关键浏览器场景与实际投屏分辨率检查因本机无法启动 Docker 未执行，两项验收保持未勾选**。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
+| PORT-006 作品集材料与发布验收 | ✅ DONE：评测报告新增**溯源块**（commit、工作区是否干净、生成时间、实际命令），不可读时写「未记录」而不是省略，工作区不干净时不会被当成干净提交；[`docs/evaluation/report-holdout.md`](./docs/evaluation/report-holdout.md) 为受版本控制的实测报告；README 补「模型与规则边界」（规则层决定、模型层贡献，各自能被什么证明）与「关键指标（可复现）」（数字带适用边界 + 复现步骤 + 退出码契约）；[`docs/architecture.svg`](./docs/architecture.svg) 为不依赖 Mermaid 的独立架构图；[`docs/release/no-duplicate-write.md`](./docs/release/no-duplicate-write.md) 为「恢复后没有重复写入」案例（三层独立守卫 + 断言位置 + 复现命令）；[`演示脚本.md`](./演示脚本.md) 拆成 **5 分钟录屏版**与 **10 分钟现场版**，并新增「Mock 模式的验证范围」一节。发布验收记录见 [`docs/release/verification.md`](./docs/release/verification.md) |
 
 ## MVP 边界
 
@@ -295,7 +296,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 
 三处版本号彼此独立，不要互相推导：
 
-- **发布标签** `v1.0.0` 标记 FIN-013 发布收口那次提交，是本仓库的演示基线快照。
+- **发布标签** `v1.0.0` 标记 FIN-013 发布收口那次提交，是本仓库的第一个演示基线快照。`v1.1.0` 标记 PORT-001~006 这一轮改进的收口提交（新增模型模式端点、证据直达原文、审批页信息完整、评测报告溯源、演示材料双版本）。
 - **后端包**（`pyproject.toml`）与**前端包**（`apps/web/package.json`）的版本号均为 `0.1.0`，是随 PORT 系列继续迭代的工作版本，不随发布标签走。
 - **API 版本**是路径前缀 `/api/v1`（`API_BASE_PATH`），属于 HTTP 契约，与上面两个包版本无关。
 
