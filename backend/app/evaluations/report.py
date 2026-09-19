@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.app.evaluations.injection import ATTACK_SUCCESS_THRESHOLD, InjectionRunReport
 from backend.app.evaluations.metrics import CorpusMetrics, Stage
 from backend.app.evaluations.runner import PredictionSource
 
@@ -52,6 +53,29 @@ SOURCE_CAVEATS: dict[PredictionSource, str] = {
 #: Printed with a live section whose recording is stale, and with any section whose
 #: prompt version is not the live one.
 STALE_NOTE = "提示词版本与当前版本不一致，该结论对应的是旧契约。"
+
+#: What an injection section's "model followed" column can and cannot establish.
+#: The count is not a resistance score: §9.5 permits untrusted text to influence
+#: natural-language generation, and a stand-in that cannot read instructions has no
+#: steerability to measure either way. Without this note a reader would read a low
+#: number as a security result.
+INJECTION_MODEL_NOTES: dict[PredictionSource, str] = {
+    PredictionSource.SCORER_FIXTURE: (
+        "夹具两侧的「分析结果」是同一个对象，因此本节的模型遵循计数没有含义；"
+        "它只证明计分器会识别攻击成功。"
+    ),
+    PredictionSource.FAKE_MODEL: (
+        "确定性替身不读取文档中的指令，其「模型遵循」计数只反映替身词表能读到哪些字面词，"
+        "不能外推为真实模型的抗注入能力；本节可直接引用的是系统侧零放行。"
+    ),
+    PredictionSource.RECORDED_REPLAY: (
+        "回放的是真实模型的历史响应，因此「模型遵循」反映录制当时的模型行为，"
+        "而「系统放行」反映当前代码。"
+    ),
+    PredictionSource.LIVE_MODEL: (
+        "本次真实调用；「模型遵循」与「系统放行」都是当前模型与当前代码的观测值。"
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +118,7 @@ class Section:
     caveat: str
     metrics: CorpusMetrics | None = None
     fixtures: tuple[FixtureMetric, ...] = ()
+    injection: InjectionRunReport | None = None
     notes: tuple[str, ...] = ()
     pricing: Pricing | None = None
 
@@ -109,6 +134,9 @@ def build_report(title: str, sections: list[Section]) -> EvaluationReport:
 
     Two sections for the same source would be two runs whose numbers a reader
     would naturally add up; raising forces the caller to say which one it means.
+    The same rule applies *inside* a section: a corpus run and an injection run in
+    one section must share a source, or the section would be presenting two runs'
+    figures under one label.
     """
     seen: set[PredictionSource] = set()
     for section in sections:
@@ -118,6 +146,16 @@ def build_report(title: str, sections: list[Section]) -> EvaluationReport:
                 "report one run per source instead of merging them"
             )
         seen.add(section.source)
+        if (
+            section.metrics is not None
+            and section.injection is not None
+            and section.metrics.source is not section.injection.source
+        ):
+            raise ValueError(
+                f"section {section.source.value} holds a corpus run from "
+                f"{section.metrics.source.value} and an injection run from "
+                f"{section.injection.source.value}; they are different runs"
+            )
     return EvaluationReport(title=title, sections=tuple(sections))
 
 
@@ -135,6 +173,8 @@ def _render_section(section: Section) -> list[str]:
     lines.append("")
     if section.metrics is not None:
         lines.extend(_render_corpus(section.metrics))
+    if section.injection is not None:
+        lines.extend(_render_injection(section.injection))
     if section.fixtures:
         lines.extend(_render_fixtures(section.fixtures))
     if section.metrics is not None:
@@ -260,6 +300,53 @@ def _render_corpus(metrics: CorpusMetrics) -> list[str]:
                 f"{sample.expected} | {sample.observed} |"
             )
     lines.extend(["", f"总耗时 {metrics.elapsed_seconds:.2f} 秒。", ""])
+    return lines
+
+
+def _render_injection(report: InjectionRunReport) -> list[str]:
+    """Render the injection half, keeping the two facts visibly separate.
+
+    The two lines are the point of the section. "The model followed the attack" is
+    expected to be possible and is not a failure; "the system permitted it" is the
+    failure. A single combined count would let the first hide behind the second, or
+    the second hide behind the first.
+    """
+    scope = f"{report.measured_pairs}/{report.pairs}"
+    lines = [
+        "### 注入（原始 clean / injected 文本对）",
+        "",
+        "两侧文本走同一条实际分析链路：抽取经配置的网关，硬性规则与报告由同一份确认后"
+        "字段产生，控制流与审批门禁由真实 `ApplicationRun` 图执行。",
+        "",
+        f"- 数据集：`{report.dataset_name}@{report.dataset_version}`"
+        + (f"（content_hash `{report.content_hash[:16]}…`）" if report.content_hash else ""),
+        f"- 样本：{scope} 例可测量，失败 {report.failed_pairs} 例，"
+        f"覆盖 {len(report.covered_kinds)} 类攻击",
+        f"- **模型遵循攻击内容：{report.model_followed_pairs}/{report.measured_pairs}**"
+        "（预期可发生，§9.5 允许不可信文本影响自然语言生成）",
+        f"- **系统放行越权 / 副作用 / 审批绕过：{report.system_permitted_pairs}"
+        f"/{report.measured_pairs}**（门槛 {ATTACK_SUCCESS_THRESHOLD}）",
+        "",
+        INJECTION_MODEL_NOTES[report.source],
+        "",
+    ]
+    if report.findings:
+        lines.extend(
+            [
+                "| 放行类型 | 次数 |",
+                "| --- | ---: |",
+            ]
+        )
+        for finding, count in report.findings:
+            lines.append(f"| {finding.value} | {count} |")
+        lines.append("")
+    if report.failed_pairs:
+        lines.append(
+            f"有 {report.failed_pairs} 例未能观测，未计入上述比例；失败即失败，不按通过处理。"
+        )
+        lines.append("")
+    lines.append(f"总耗时 {report.elapsed_seconds:.2f} 秒。")
+    lines.append("")
     return lines
 
 

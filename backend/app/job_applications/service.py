@@ -42,6 +42,40 @@ from backend.app.job_applications.side_effects import ApplicationSideEffectServi
 
 logger = logging.getLogger(__name__)
 
+#: The status an ApplicationRun starts from. A *default*, not a value the document
+#: or the model gets to choose: the proposal a human reviews is built from this, and
+#: the only way to change it is an EDIT decision (§11.5).
+DEFAULT_PROPOSED_STATUS = "SHORTLISTED"
+
+
+def build_initial_state(
+    *, run: AgentRun, application: JobApplication, application_run: ApplicationRun
+) -> dict[str, Any]:
+    """The ApplicationRun graph's initial state, built only from typed columns (§11.3).
+
+    Every value comes from a column or from ``run.attempt`` — never from a document,
+    a job description, or model output. That is what makes the approval gate
+    reachable-but-not-skippable: untrusted text has no channel into this dictionary.
+
+    Public because the injection evaluation drives the same graph and must build the
+    same state. A second, locally written initial state would let the evaluation
+    observe a gate the worker never reaches — and the difference would look like a
+    security result rather than a fixture bug.
+    """
+    return {
+        "application_id": str(application.id),
+        "job_id": str(application.job_id),
+        "candidate_id": str(application.candidate_id),
+        "current_status": application.status.value,
+        "match_report_id": (
+            str(application_run.match_report_id)
+            if application_run.match_report_id is not None
+            else None
+        ),
+        "attempt": run.attempt,
+        "proposed_status": DEFAULT_PROPOSED_STATUS,
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class ApplicationRunDelivery:
@@ -234,19 +268,9 @@ class ApplicationRunService:
                 status=RunStatus.RUNNING,
                 message_key="run.worker_started",
             )
-            initial_state: dict[str, Any] = {
-                "application_id": str(application.id),
-                "job_id": str(application.job_id),
-                "candidate_id": str(application.candidate_id),
-                "current_status": application.status.value,
-                "match_report_id": (
-                    str(application_run.match_report_id)
-                    if application_run.match_report_id is not None
-                    else None
-                ),
-                "attempt": run.attempt,
-                "proposed_status": "SHORTLISTED",
-            }
+            initial_state = build_initial_state(
+                run=run, application=application, application_run=application_run
+            )
             result = await self._run_service.run_graph(
                 run, build_application_graph(), initial_state
             )

@@ -213,12 +213,13 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | PORT-001 运行配置、依赖与测试隔离 | ✅ DONE：`httpx2` 纳入运行依赖并同步双锁文件；模型端点、凭据、模型名、超时、向量维度与 SSE 心跳由 Compose 透传；配置单测与本地 `.env` 隔离；README 与环境清单口径校准。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-002 逐项证据绑定与评分语义 | ✅ DONE：报告结论不再默认引用第一条证据，改为按观测值在候选人原文中定位（学历等级归一化到同一序数表、技能按词边界匹配、年限要求精确等值），定位不到即降级支持等级并在文案与 `confidence_note` 中说明；分数明确标注为「检索排序换算分（非模型置信度）」。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-003 真实模型匹配解释闭环 | ✅ DONE（首个验收项待凭据）：新增封闭的模型解释契约（`extra="forbid"`、`impact` 仅 `LOW/MEDIUM`，模型要求 `HIGH` 判为契约违规而非夹取）、Qwen 解释适配器与确定性 Fake；模型引用在持久化前经服务端反查切片并走同一套 §9.4 校验，模型结论支持等级上限为 `PARTIAL`；429 / 超时 / Schema 错误 / 非法引用各有独立 `reason_code`，模型故障不影响 run 终态、不触发审批或副作用；`match_explanations` 记录模型、Prompt、规则版本、耗时、重试与可获得的 Token usage，报告结论以 `source` 区分规则判定与模型解释。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
+| PORT-004 实际输出评测与录制回放 | ✅ DONE（真实模型项待凭据）：52 例由原始简历文本与岗位输入驱动的评测集（13 类画像 × 4 类岗位，DEV/HOLDOUT 分离），标准答案独立标注；预测由真实链路产生（网关抽取 → 召回 → 硬性规则 → 报告 → 真实 `ApplicationRun` 图），并按 `SCORER_FIXTURE` / `FAKE_MODEL` / `RECORDED_REPLAY` / `LIVE_MODEL` 分开报告、拒绝合并；28 组原始 clean / injected 文本对走同一条链路，「模型是否遵循攻击内容」与「系统是否放行越权 / 副作用 / 审批绕过」分别记录；空语料、缺录制、门禁不可达、超出调用预算一律失败退出。`python scripts/run_evaluation.py --k 5 --split holdout` 为唯一入口。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 
 ## MVP 边界
 
 - 电子 PDF / DOCX（无 OCR）、合成数据、单机、MockSchedule、精确向量检索（HNSW 不默认启用）、Langfuse 可选。
 - 未审批副作用执行次数 = 0；RBAC 服务端每次重校验；SSE 每批 / 心跳持续授权。
-- 尚未闭环的两项，均属「机制已就绪、缺显式触发」：真实百炼凭据下的模型诊断与评测；手动的真实模型 CI 工作流。运行镜像的模型依赖与配置透传已补齐（PORT-001），关掉 mock 时会解析到真实网关，缺凭据则在启动阶段明确失败，而不是悄悄退回 FakeModel。
+- 尚未闭环的两项：真实百炼凭据下的模型诊断与真实模型评测（入口已就绪：`python scripts/run_evaluation.py --live --max-calls N`，缺的是凭据与预算确认，不是机制）；手动的真实模型 CI 工作流。运行镜像的模型依赖与配置透传已补齐（PORT-001），关掉 mock 时会解析到真实网关，缺凭据则在启动阶段明确失败，而不是悄悄退回 FakeModel。
 - `SSE_HEARTBEAT_SECONDS` 由 Compose 转发，`.env.example`、Compose 默认值与代码默认值统一为 1 秒。
 
 ## 版本口径

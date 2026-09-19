@@ -36,8 +36,17 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.app.core.settings import get_settings  # noqa: E402
+from backend.app.evaluations.budget import BudgetedGateway  # noqa: E402
 from backend.app.evaluations.corpus import BUILTIN_CORPUS, Split  # noqa: E402
 from backend.app.evaluations.executor import BuiltinEvaluationExecutor  # noqa: E402
+from backend.app.evaluations.injection import (  # noqa: E402
+    InjectionRunReport,
+    observe_dataset,
+    summarise,
+)
+from backend.app.evaluations.injection_corpus import (  # noqa: E402
+    BUILTIN_INJECTION_DATASET,
+)
 from backend.app.evaluations.metrics import CorpusMetrics, evaluate  # noqa: E402
 from backend.app.evaluations.report import (  # noqa: E402
     SOURCE_CAVEATS,
@@ -51,8 +60,10 @@ from backend.app.evaluations.runner import (  # noqa: E402
     EvaluationSetupError,
     PredictionSource,
     run_corpus,
+    underlying_gateway,
 )
 from backend.app.infrastructure.embedding import build_embedding_gateway  # noqa: E402
+from backend.app.infrastructure.model_gateway import ModelGateway  # noqa: E402
 from backend.app.infrastructure.recording import (  # noqa: E402
     RecordingError,
     build_gateway_for_mode,
@@ -64,6 +75,8 @@ EXIT_OK = 0
 EXIT_CANNOT_CONCLUDE = 1
 #: The run could not start: missing recording, empty corpus, bad configuration.
 EXIT_SETUP_FAILED = 2
+#: A measured run that broke a zero bar (an attack the system permitted).
+EXIT_GATE_FAILED = 3
 
 _SPLITS: dict[str, Split | None] = {"dev": Split.DEV, "holdout": Split.HOLDOUT, "all": None}
 
@@ -111,6 +124,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--no-fixtures",
         action="store_true",
         help="omit the built-in scorer section (it is a different source)",
+    )
+    parser.add_argument(
+        "--no-injection",
+        action="store_true",
+        help="omit the clean/injected pair observation (also a different measurement)",
+    )
+    parser.add_argument(
+        "--max-calls",
+        type=int,
+        default=None,
+        help="stop the run after this many extraction calls (a live run must state one)",
+    )
+    parser.add_argument(
+        "--allow-unbudgeted",
+        action="store_true",
+        help="permit a live run with no call budget; the absence is recorded in the report",
     )
     parser.add_argument(
         "--prompt-price",
@@ -164,15 +193,47 @@ def _fixture_section(config: RetrievalConfig) -> Section:
     )
 
 
-def _corpus_section(metrics: CorpusMetrics, pricing: Pricing | None) -> Section:
+def _corpus_section(
+    metrics: CorpusMetrics,
+    pricing: Pricing | None,
+    injection: InjectionRunReport | None,
+    notes: tuple[str, ...],
+) -> Section:
     scope = metrics.split.value if metrics.split else "全部"
     return Section(
         source=metrics.source,
         heading=f"{metrics.corpus_name}@{metrics.corpus_version}｜{scope}",
         caveat=SOURCE_CAVEATS[metrics.source],
         metrics=metrics,
+        injection=injection,
+        notes=notes,
         pricing=pricing,
     )
+
+
+def _budgeted_gateway(args: argparse.Namespace, gateway: ModelGateway) -> ModelGateway:
+    """Apply the stated call budget, and refuse to let a live run omit one.
+
+    A live evaluation is the only part of this system that spends money per run, so
+    the number of calls it may make is a parameter of the run rather than something
+    reconstructed from the bill. Refusing an unbudgeted live run is deliberate: the
+    operator who wanted no limit can say so, and the report records that they did.
+    """
+    if args.max_calls is None:
+        if args.live and not args.allow_unbudgeted:
+            raise EvaluationSetupError(
+                "EVALUATION_BUDGET_NOT_STATED",
+                "真实模型评测必须声明调用预算：--max-calls N"
+                "（确实不限时请显式加 --allow-unbudgeted）",
+            )
+        return gateway
+    return BudgetedGateway(gateway, max_calls=args.max_calls)
+
+
+def _budget_note(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.max_calls is None:
+        return ("本次未声明调用预算（--max-calls），实际调用次数不受评测入口限制。",)
+    return (f"本次调用预算 {args.max_calls} 次；超出即停止评测，不产生结论。",)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -182,7 +243,9 @@ async def _run(args: argparse.Namespace) -> int:
         settings = settings.model_copy(update={"mock_model_mode": False})
     if args.k <= 0:
         raise EvaluationSetupError("EVALUATION_INVALID_K", f"--k must be positive, got {args.k}")
-    gateway = build_gateway_for_mode(settings, recording_path=args.recording)
+    gateway = _budgeted_gateway(
+        args, build_gateway_for_mode(settings, recording_path=args.recording)
+    )
     embedding_gateway = build_embedding_gateway(settings)
     config = RetrievalConfig.from_settings(settings)
 
@@ -198,11 +261,30 @@ async def _run(args: argparse.Namespace) -> int:
         gateway=gateway,
         embedding_gateway=embedding_gateway,
         config=config,
-        model_name=getattr(gateway, "model", ""),
+        model_name=getattr(underlying_gateway(gateway), "model", ""),
     )
     metrics = evaluate(run, BUILTIN_CORPUS, k=args.k, split=split)
 
-    sections = [_corpus_section(metrics, _pricing(args))]
+    # The injection half runs over the same half of the corpus and the same gateway,
+    # so it is the same source and belongs in the same section. A different gateway
+    # would make it a different run, and ``build_report`` would refuse to merge them.
+    injection: InjectionRunReport | None = None
+    if not args.no_injection:
+        injection = summarise(
+            await observe_dataset(
+                dataset=BUILTIN_INJECTION_DATASET,
+                corpus=BUILTIN_CORPUS,
+                pairs=BUILTIN_INJECTION_DATASET.split(split)
+                if split is not None
+                else BUILTIN_INJECTION_DATASET.pairs,
+                gateway=gateway,
+                embedding_gateway=embedding_gateway,
+                config=config,
+                model_name=getattr(underlying_gateway(gateway), "model", ""),
+            )
+        )
+
+    sections = [_corpus_section(metrics, _pricing(args), injection, _budget_note(args))]
     if not args.no_fixtures:
         sections.append(_fixture_section(config))
 
@@ -215,6 +297,15 @@ async def _run(args: argparse.Namespace) -> int:
     if not metrics.concluded:
         sys.stderr.write("\n评测未能得出结论：没有任何用例可测量，不产生通过结论。\n")
         return EXIT_CANNOT_CONCLUDE
+    if injection is not None and not injection.concluded:
+        sys.stderr.write("\n注入评测未能得出结论：没有任何用例可观测，不产生通过结论。\n")
+        return EXIT_CANNOT_CONCLUDE
+    if injection is not None and not injection.passed:
+        sys.stderr.write(
+            f"\n注入门槛未通过：系统放行 {injection.system_permitted_pairs} 例"
+            "（越权 / 副作用 / 审批绕过），门槛为 0。\n"
+        )
+        return EXIT_GATE_FAILED
     return EXIT_OK
 
 

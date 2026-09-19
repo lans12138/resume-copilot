@@ -71,6 +71,7 @@ EMPTY_CORPUS = "EVALUATION_CORPUS_EMPTY"
 NO_CANDIDATE_PROFILES = "EVALUATION_NO_CANDIDATE_PROFILES"
 INCOMPLETE_RECORDING = "EVALUATION_RECORDING_INCOMPLETE"
 EXTRACTION_FAILED = "EVALUATION_EXTRACTION_FAILED"
+BUDGET_EXCEEDED = "EVALUATION_CALL_BUDGET_EXCEEDED"
 
 
 class EvaluationSetupError(RuntimeError):
@@ -84,6 +85,24 @@ class EvaluationSetupError(RuntimeError):
         super().__init__(safe_message)
         self.code = code
         self.safe_message = safe_message
+
+
+class BudgetExceeded(EvaluationSetupError):
+    """The run tried to make more calls than it was allowed.
+
+    A *setup* failure rather than a per-case one, and the distinction is the whole
+    point: a case whose extraction fails is a smaller denominator the report can
+    still describe, but a run that ran out of budget did not finish measuring what
+    it set out to measure. Treating it as a per-case failure would let a truncated
+    run report rates computed over whatever happened to fit.
+    """
+
+    def __init__(self, *, limit: int) -> None:
+        super().__init__(
+            BUDGET_EXCEEDED,
+            f"调用预算已用尽（上限 {limit} 次）；评测在超预算处停止，不产生结论",
+        )
+        self.limit = limit
 
 
 class PredictionSource(StrEnum):
@@ -104,16 +123,44 @@ class PredictionSource(StrEnum):
     LIVE_MODEL = "LIVE_MODEL"
 
 
+def underlying_gateway(gateway: ModelGateway) -> ModelGateway:
+    """Follow a decorator chain to the adapter that actually answers.
+
+    A wrapper — the call-budget one, for instance — is not a gateway kind. Without
+    this, two things would break silently: ``classify_gateway`` would call a wrapped
+    *fake* a live call, and ``run_corpus``'s incomplete-recording check (an
+    ``isinstance`` test) would stop firing for a wrapped recording. Both would be
+    wrong in the direction that flatters the run.
+    """
+    seen: set[int] = {id(gateway)}
+    current: ModelGateway = gateway
+    while True:
+        inner = getattr(current, "inner", None)
+        if inner is None or id(inner) in seen:
+            return current
+        seen.add(id(inner))
+        current = inner
+
+
 def classify_gateway(gateway: ModelGateway) -> PredictionSource:
     """Name the provenance of a gateway's output.
 
     Checked in this order because the replay adapter is what decides provenance:
     a recording is evidence that the real contract was exercised, and a run that
     used one is not the same as a run that called the model today.
+
+    A gateway may also *declare* its source (``prediction_source``). That is what
+    lets a decorator forward the provenance of what it wraps instead of being
+    mistaken for a live call, which would publish a budgeted fake run as real-model
+    evidence. Absent a declaration the chain is unwrapped and the adapter decides.
     """
-    if isinstance(gateway, RecordedModelGateway):
+    declared = getattr(gateway, "prediction_source", None)
+    if isinstance(declared, PredictionSource):
+        return declared
+    adapter = underlying_gateway(gateway)
+    if isinstance(adapter, RecordedModelGateway):
         return PredictionSource.RECORDED_REPLAY
-    if isinstance(gateway, FakeModelGateway):
+    if isinstance(adapter, FakeModelGateway):
         return PredictionSource.FAKE_MODEL
     return PredictionSource.LIVE_MODEL
 
@@ -310,9 +357,15 @@ def gateway_usage(gateway: ModelGateway) -> UsageRecord | None:
     ``None`` is a real answer: the deterministic stand-in has no counter, and a
     zero would be read as "this run was free" rather than "this run cannot be
     priced". The report distinguishes the two.
+
+    A decorator chain is followed, so wrapping the real adapter in a budget guard
+    does not lose the usage record the adapter kept.
     """
-    record = getattr(gateway, "usage", None)
-    return record if isinstance(record, UsageRecord) else None
+    for candidate in (gateway, underlying_gateway(gateway)):
+        record = getattr(candidate, "usage", None)
+        if isinstance(record, UsageRecord):
+            return record
+    return None
 
 
 def _match_run(*, case: CorpusCase, config: RetrievalConfig, source: PredictionSource) -> MatchRun:
@@ -348,7 +401,7 @@ def _candidate(
     )
 
 
-async def _predict_case(
+async def predict_case(
     *,
     case: CorpusCase,
     gateway: ModelGateway,
@@ -361,6 +414,11 @@ async def _predict_case(
         draft = await gateway.extract_profile(
             full_text=case.resume_text, blocks=list(blocks_for(case))
         )
+    except EvaluationSetupError:
+        # A budget overrun is not a case that failed; it is a run that stopped being
+        # the run it claimed to be. Letting it through as a per-case failure would
+        # produce rates over whatever fit inside the budget.
+        raise
     except Exception as error:  # noqa: BLE001 - one case must not abort the run
         # The failure is recorded rather than raised: a run that measured 47 of 48
         # cases can still be reported, as long as the report says so. What must not
@@ -437,7 +495,7 @@ async def _predict_case(
 # --------------------------------------------------------------------------- #
 
 
-def _widen_to_pool(config: RetrievalConfig, pool_size: int) -> RetrievalConfig:
+def widen_to_pool(config: RetrievalConfig, pool_size: int) -> RetrievalConfig:
     """Cut the fused ranking at the pool size instead of the production Top-K.
 
     RRF scores are computed over the whole ranking and only then truncated, so
@@ -467,8 +525,11 @@ async def run_corpus(
     """
     if not cases:
         raise EvaluationSetupError(EMPTY_CORPUS, "评测集为空，无法产生任何指标")
-    if isinstance(gateway, RecordedModelGateway):
-        missing = [case.case_id for case in cases if not gateway.has_call_for(case.resume_text)]
+    adapter = underlying_gateway(gateway)
+    if isinstance(adapter, RecordedModelGateway):
+        missing = [
+            case.case_id for case in cases if not adapter.has_call_for(case.resume_text)
+        ]
         if missing:
             raise EvaluationSetupError(
                 INCOMPLETE_RECORDING,
@@ -480,12 +541,12 @@ async def run_corpus(
     if not repository.profiles:
         raise EvaluationSetupError(NO_CANDIDATE_PROFILES, "检索语料为空，无法产生排序")
 
-    effective = _widen_to_pool(config, len(repository.profiles))
+    effective = widen_to_pool(config, len(repository.profiles))
     service = RetrievalService(repository, embedding_gateway)
 
     started = time.perf_counter()
     predictions = [
-        await _predict_case(
+        await predict_case(
             case=case,
             gateway=gateway,
             service=service,
@@ -532,5 +593,8 @@ __all__ = [
     "content_hash",
     "document_id",
     "gateway_usage",
+    "predict_case",
     "run_corpus",
+    "underlying_gateway",
+    "widen_to_pool",
 ]
