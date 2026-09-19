@@ -22,7 +22,7 @@
 
 | 项 | 命令 | 结果 |
 |---|---|---|
-| 后端全量测试 | `pytest -q` | **882 passed / 17 skipped** |
+| 后端全量测试 | `pytest -q` | **886 passed / 17 skipped** |
 | 静态检查（verify 同款） | `ruff check backend apps tests/unit tests/integration` | 干净 |
 | 类型检查（verify 同款） | `mypy backend apps tests/unit` | 干净，**247 个文件** |
 | E2E 夹具一致性 | `python scripts/generate_e2e_fixtures.py --check` | `E2E fixtures parse to the expected blocks.` |
@@ -32,9 +32,9 @@
 | 迁移（离线） | `alembic upgrade head --sql` | 退出 0，生成 40 条 `CREATE TABLE` / `ALTER TABLE` |
 | 恢复与幂等 | `pytest -q tests/unit/test_concurrency_recovery.py tests/unit/test_side_effects.py tests/unit/test_idempotency.py` | **15 passed** |
 | 前端类型 | `tsc -b` | 干净 |
-| 前端测试 | `vitest run` | **30 files / 231 passed** |
-| 前端构建 | `vite build` | 通过（`dist/assets/index-*.js` 383.14 kB / gzip 116.09 kB） |
-| 文档通用检查 | 宿主复现 `validate_documents.ps1` 的围栏 / 表格 / 链接 / 文件数断言 | `MARKDOWN_GENERIC_OK markdown=12 local_links=50` |
+| 前端测试 | `vitest run` | **31 files / 238 passed** |
+| 前端构建 | `vite build` | 通过（`dist/assets/index-*.js` 383.16 kB / gzip 116.09 kB） |
+| 文档通用检查 | 宿主复现 `validate_documents.ps1` 的围栏 / 表格 / 链接 / 文件数断言 | `MARKDOWN_GENERIC_OK markdown=12 local_links=60` |
 | 演示脚本契约串 | 逐条 `grep -F` 核对 9 个必需串 + 2 条负向断言 | 9/9 命中，负向断言 0 命中 |
 
 ## 3. `project.ps1 verify` 逐步骤对照
@@ -64,7 +64,7 @@
 | `generate_e2e_fixtures.py --check` | ✅ | 退出 0 |
 | `ruff check backend apps tests/unit tests/integration` | ✅ | 干净 |
 | `mypy backend apps tests/unit` | ✅ | 247 文件 |
-| `pytest -q` | ✅ | 882 passed / 17 skipped（PG/Redis 集成用例按设计跳过，由探针栈执行） |
+| `pytest -q` | ✅ | 886 passed / 17 skipped（PG/Redis 集成用例按设计跳过，由探针栈执行） |
 | `validate_api_runtime.ps1` | ✗ | 需要活栈 |
 | web `typecheck` / `test` / `build` | ✅ | 均通过 |
 | `validate_web.ps1`（Playwright） | ✗ | 需要活栈 |

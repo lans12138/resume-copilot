@@ -264,8 +264,8 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | 项 | 值 |
 |---|---|
 | 后端 | 177 个 Python 文件（`backend/`）/ 约 28.6k 行；`ruff` 干净，`mypy` strict 通过 247 个文件 |
-| 后端测试 | `pytest -q` → **882 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
-| 前端 | 81 个 `.ts` / `.tsx` / 约 9.9k 行；`tsc -b` 干净，`vitest` 30 个测试文件 **231 passed**，`vite build` 通过 |
+| 后端测试 | `pytest -q` → **886 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
+| 前端 | 82 个 `.ts` / `.tsx` / 约 10.1k 行；`tsc -b` 干净，`vitest` 31 个测试文件 **238 passed**，`vite build` 通过 |
 | E2E | 5 个 Playwright spec（含 FIN-010 非种子主路径、FIN-011 故障与安全矩阵） |
 | 迁移 | 13 个 Alembic 版本，head `0013_match_explanations`，26 张表 |
 | 探针 | `tests/` 下 25 个受版本控制的 PowerShell 探针，其中 **23 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
