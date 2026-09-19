@@ -195,9 +195,9 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 
 | 项 | 值 |
 |---|---|
-| 后端 | 166 个 Python 文件（`backend/`）/ 约 24.0k 行；`ruff` 干净，`mypy` strict 通过 |
-| 后端测试 | `pytest -q` → **710 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
-| 前端 | 70 个 `.ts` / `.tsx` / 约 7.5k 行；`tsc --noEmit` 干净，`vitest` 23 个测试文件 **130 passed**，`vite build` 通过 |
+| 后端 | 176 个 Python 文件（`backend/`）/ 约 28.4k 行；`ruff` 干净，`mypy` strict 通过 245 个文件 |
+| 后端测试 | `pytest -q` → **865 passed**（+17 项 PostgreSQL/Redis 集成用例在无 `DATABASE_URL` 时按设计跳过，由探针栈内执行）。配置单测已与本地 `.env` 隔离，有无本地配置结论一致 |
+| 前端 | 81 个 `.ts` / `.tsx` / 约 9.9k 行；`tsc -b` 干净，`vitest` 30 个测试文件 **231 passed**，`vite build` 通过 |
 | E2E | 5 个 Playwright spec（含 FIN-010 非种子主路径、FIN-011 故障与安全矩阵） |
 | 迁移 | 13 个 Alembic 版本，head `0013_match_explanations`，26 张表 |
 | 探针 | `tests/` 下 25 个受版本控制的 PowerShell 探针，其中 **23 个接入 `project.ps1 verify`**。另 2 个是 Gate 0 的宿主环境探针（`validate_container_runtime.ps1` / `validate_environment_setup.ps1`，见 [`环境配置清单.md`](./环境配置清单.md) §5.1）：它们验证本机 Docker/WSL 与 Windows 宿主配置，因此在开发机上跑，不进 CI |
@@ -214,6 +214,7 @@ pwsh scripts/project.ps1 web                 # http://localhost:5173，需 CORS_
 | PORT-002 逐项证据绑定与评分语义 | ✅ DONE：报告结论不再默认引用第一条证据，改为按观测值在候选人原文中定位（学历等级归一化到同一序数表、技能按词边界匹配、年限要求精确等值），定位不到即降级支持等级并在文案与 `confidence_note` 中说明；分数明确标注为「检索排序换算分（非模型置信度）」。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-003 真实模型匹配解释闭环 | ✅ DONE（首个验收项待凭据）：新增封闭的模型解释契约（`extra="forbid"`、`impact` 仅 `LOW/MEDIUM`，模型要求 `HIGH` 判为契约违规而非夹取）、Qwen 解释适配器与确定性 Fake；模型引用在持久化前经服务端反查切片并走同一套 §9.4 校验，模型结论支持等级上限为 `PARTIAL`；429 / 超时 / Schema 错误 / 非法引用各有独立 `reason_code`，模型故障不影响 run 终态、不触发审批或副作用；`match_explanations` 记录模型、Prompt、规则版本、耗时、重试与可获得的 Token usage，报告结论以 `source` 区分规则判定与模型解释。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 | PORT-004 实际输出评测与录制回放 | ✅ DONE（真实模型项待凭据）：52 例由原始简历文本与岗位输入驱动的评测集（13 类画像 × 4 类岗位，DEV/HOLDOUT 分离），标准答案独立标注；预测由真实链路产生（网关抽取 → 召回 → 硬性规则 → 报告 → 真实 `ApplicationRun` 图），并按 `SCORER_FIXTURE` / `FAKE_MODEL` / `RECORDED_REPLAY` / `LIVE_MODEL` 分开报告、拒绝合并；28 组原始 clean / injected 文本对走同一条链路，「模型是否遵循攻击内容」与「系统是否放行越权 / 副作用 / 审批绕过」分别记录；空语料、缺录制、门禁不可达、超出调用预算一律失败退出。`python scripts/run_evaluation.py --k 5 --split holdout` 为唯一入口。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
+| PORT-005 关键页面与演示体验 | ✅ DONE（浏览器与投屏项未执行）：排名与报告以候选人姓名和事实摘要呈现，Profile ID 降为「辅助追踪」；每条证据标出页码 / 段落并可直接打开原文定位（`?chunk=`），证据属于旧版本时明说而不是静默失败；时间线只显示可读节点名、状态与失败原因，事件类型 / 消息键 / 载荷收进辅助详情；审批页按「拟执行动作 → 原提案与参数 → 当前版本 → 执行结果」组织，并区分「决策已记录但尚未写入」（`APPROVED` / `EDITED`）与「恰好落库一次」（`EXECUTED`）；`GET /api/v1/runtime/model-mode` 在每页顶部标明当前是真实模型还是 Mock 及其证明范围，报告标出结论来源，错误与终态各自给出恢复指引。**关键浏览器场景与实际投屏分辨率检查因本机无法启动 Docker 未执行，两项验收保持未勾选**。验收证据见 [`后续开发计划.md`](./后续开发计划.md) §5 |
 
 ## MVP 边界
 
